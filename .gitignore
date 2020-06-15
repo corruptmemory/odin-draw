@@ -1,0 +1,5 @@
+draw
+odin-draw.sublime-*
+odin-draw.code-*
+.vscode/
+*.spv
