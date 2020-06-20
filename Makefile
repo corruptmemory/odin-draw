@@ -12,7 +12,7 @@ shaders/frag.spv: shaders/shader.frag
 draw: draw.odin
 	odin build draw.odin -vet -collection:shared=./external
 
-run: draw shaders/vert.spv shaders/frag.spv
+run: shaders/vert.spv shaders/frag.spv
 	odin run draw.odin -vet -collection:shared=./external
 
 clean:

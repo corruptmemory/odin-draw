@@ -40,6 +40,10 @@ VulkanContext :: struct {
     inFlightFences: []vk.Fence,
     imagesInFlight: []vk.Fence,
     currentFrame: int,
+    window: ^sdl.Window,
+    framebufferResized: bool,
+    width: u32,
+    height: u32,
 }
 
 extensions :: []cstring {
@@ -90,6 +94,9 @@ is_device_suitable :: proc(physicalDevice: vk.PhysicalDevice) -> bool {
     if deviceProperties.deviceType == vk.PhysicalDeviceType.DiscreteGpu && deviceFeatures.geometryShader != 0 {
         return true;
     }
+    // if deviceFeatures.geometryShader != 0 {
+    //     return true;
+    // }
     return false;
 }
 
@@ -271,23 +278,25 @@ choose_swap_present_mode :: proc(availablePresentModes: []vk.PresentModeKHR) -> 
     return vk.PresentModeKHR.Fifo;
 }
 
-choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR) -> vk.Extent2D {
-    if capabilities.currentExtent.width != bits.U32_MAX {
-        return capabilities.currentExtent;
-    } else {
-        actualExtent := vk.Extent2D{screen_width, screen_height};
+choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR, window:^sdl.Window, width, height: u32) -> vk.Extent2D {
+    // if capabilities.currentExtent.width != bits.U32_MAX {
+    //     return capabilities.currentExtent;
+    // } else {
+        actualExtent := vk.Extent2D{width, height};
 
-        actualExtent.width = max(capabilities.minImageExtent.width, min(capabilities.maxImageExtent.width, actualExtent.width));
-        actualExtent.height = max(capabilities.minImageExtent.height, min(capabilities.maxImageExtent.height, actualExtent.height));
+        // actualExtent.width = max(capabilities.minImageExtent.width, min(capabilities.maxImageExtent.width, actualExtent.width));
+        // actualExtent.height = max(capabilities.minImageExtent.height, min(capabilities.maxImageExtent.height, actualExtent.height));
 
         return actualExtent;
-    }
+    // }
 }
 
 create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     surfaceFormat := choose_swap_surface_format(vkc.formats);
     presentMode := choose_swap_present_mode(vkc.presentModes);
-    extent := choose_swap_extent(&vkc.capabilities);
+    extent := choose_swap_extent(&vkc.capabilities,vkc.window, vkc.width, vkc.height);
+
+    fmt.println("extent: ",extent);
 
     imageCount := vkc.capabilities.minImageCount + 1;
     if vkc.capabilities.maxImageCount > 0 && imageCount > vkc.capabilities.maxImageCount {
@@ -311,7 +320,7 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     }
     queueFamilyIndices := []u32{vkc.graphicsFamily, vkc.presentFamily};
 
-    if (vkc.graphicsFamily != vkc.presentFamily) {
+    if vkc.graphicsFamily != vkc.presentFamily {
         createInfo.imageSharingMode = vk.SharingMode.Concurrent;
         createInfo.queueFamilyIndexCount = 2;
         createInfo.pQueueFamilyIndices = mem.raw_slice_data(queueFamilyIndices);
@@ -341,13 +350,13 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 }
 
  create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
-    vertShaderCode, ok := readFile("shaders/vert.spv");
+    vertShaderCode, ok := read_file("shaders/vert.spv");
     if !ok {
         return false;
     }
     defer delete(vertShaderCode);
     fragShaderCode: []byte;
-    fragShaderCode, ok = readFile("shaders/frag.spv");
+    fragShaderCode, ok = read_file("shaders/frag.spv");
     defer delete(fragShaderCode);
     if !ok {
         return false;
@@ -472,6 +481,8 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 cleanup :: proc(vkc: ^VulkanContext) {
+    cleanup_swap_chain(vkc);
+
     for i := 0; i < max_frames_in_flight; i += 1 {
         vk.destroy_semaphore(vkc.device, vkc.renderFinishedSemaphores[i], nil);
         vk.destroy_semaphore(vkc.device, vkc.imageAvailableSemaphores[i], nil);
@@ -480,19 +491,6 @@ cleanup :: proc(vkc: ^VulkanContext) {
 
     vk.destroy_command_pool(vkc.device, vkc.commandPool, nil);
 
-    for framebuffer, _ in vkc.swapChainFramebuffers {
-        vk.destroy_framebuffer(vkc.device, framebuffer, nil);
-    }
-
-    vk.destroy_pipeline(vkc.device, vkc.graphicsPipeline, nil);
-    vk.destroy_pipeline_layout(vkc.device, vkc.pipelineLayout, nil);
-    vk.destroy_render_pass(vkc.device, vkc.renderPass, nil);
-
-    for imageView, _ in vkc.swapChainImageViews {
-        vk.destroy_image_view(vkc.device, imageView, nil);
-    }
-
-    vk.destroy_swapchain_khr(vkc.device, vkc.swapChain, nil);
     vk.destroy_device(vkc.device, nil);
 
     vk.destroy_surface_khr(vkc.instance, vkc.surface, nil);
@@ -500,15 +498,16 @@ cleanup :: proc(vkc: ^VulkanContext) {
 }
 
 create_render_pass :: proc(vkc: ^VulkanContext) -> bool {
-    colorAttachment := vk.AttachmentDescription{};
-    colorAttachment.format = vkc.swapChainImageFormat;
-    colorAttachment.samples = vk.SampleCountFlagBits._1;
-    colorAttachment.loadOp = vk.AttachmentLoadOp.Clear;
-    colorAttachment.storeOp = vk.AttachmentStoreOp.Store;
-    colorAttachment.stencilLoadOp = vk.AttachmentLoadOp.DontCare;
-    colorAttachment.stencilStoreOp = vk.AttachmentStoreOp.DontCare;
-    colorAttachment.initialLayout = vk.ImageLayout.Undefined;
-    colorAttachment.finalLayout = vk.ImageLayout.PresentSrcKhr;
+    colorAttachment := vk.AttachmentDescription{
+        format = vkc.swapChainImageFormat,
+        samples = vk.SampleCountFlagBits._1,
+        loadOp = vk.AttachmentLoadOp.Clear,
+        storeOp = vk.AttachmentStoreOp.Store,
+        stencilLoadOp = vk.AttachmentLoadOp.DontCare,
+        stencilStoreOp = vk.AttachmentStoreOp.DontCare,
+        initialLayout = vk.ImageLayout.Undefined,
+        finalLayout = vk.ImageLayout.PresentSrcKhr,
+    };
 
     colorAttachmentRef := vk.AttachmentReference{};
     colorAttachmentRef.attachment = 0;
@@ -568,7 +567,7 @@ create_framebuffers :: proc(vkc: ^VulkanContext) -> bool {
     return true;
 }
 
-readFile :: proc(filename: string) -> ([]byte, bool) {
+read_file :: proc(filename: string) -> ([]byte, bool) {
         fd, errno := os.open(filename);
         if errno != 0 {
             fmt.println("Failed to read:", filename, " error:", errno);
@@ -702,58 +701,133 @@ create_sync_objects :: proc(vkc: ^VulkanContext) -> bool {
     return true;
 }
 
-draw_frame :: proc(vkc: ^VulkanContext) -> bool {
+draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
     vk.wait_for_fences(vkc.device, 1, &vkc.inFlightFences[vkc.currentFrame], vk.TRUE, bits.U64_MAX);
 
     imageIndex: u32;
-    vk.acquire_next_image_khr(vkc.device, vkc.swapChain, bits.U64_MAX, vkc.imageAvailableSemaphores[vkc.currentFrame], nil, &imageIndex);
+    #partial switch vk.acquire_next_image_khr(vkc.device, vkc.swapChain, bits.U64_MAX, vkc.imageAvailableSemaphores[vkc.currentFrame], nil, &imageIndex) {
+        case vk.Result.ErrorOutOfDateKhr:
+            return recreate_swap_chain(vkc);
+        case vk.Result.Success, vk.Result.SuboptimalKhr:
+        // nothing
+        case:
+            return false;
+    }
+
 
     if vkc.imagesInFlight[imageIndex] != nil {
         vk.wait_for_fences(vkc.device, 1, &vkc.imagesInFlight[imageIndex], vk.TRUE, bits.U64_MAX);
     }
     vkc.imagesInFlight[imageIndex] = vkc.inFlightFences[vkc.currentFrame];
 
-    submitInfo := vk.SubmitInfo{};
-    submitInfo.sType = vk.StructureType.SubmitInfo;
-
     waitSemaphores := []vk.Semaphore{vkc.imageAvailableSemaphores[vkc.currentFrame]};
     waitStages := []vk.PipelineStageFlags{u32(vk.PipelineStageFlagBits.ColorAttachmentOutput)};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = mem.raw_slice_data(waitSemaphores);
-    submitInfo.pWaitDstStageMask = mem.raw_slice_data(waitStages);
-
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &vkc.commandBuffers[imageIndex];
-
     signalSemaphores := []vk.Semaphore{vkc.renderFinishedSemaphores[vkc.currentFrame]};
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = mem.raw_slice_data(signalSemaphores);
+
+    submitInfo := vk.SubmitInfo{
+        sType = vk.StructureType.SubmitInfo,
+        waitSemaphoreCount = 1,
+        pWaitSemaphores = mem.raw_slice_data(waitSemaphores),
+        pWaitDstStageMask = mem.raw_slice_data(waitStages),
+        commandBufferCount = 1,
+        pCommandBuffers = &vkc.commandBuffers[imageIndex],
+        signalSemaphoreCount = 1,
+        pSignalSemaphores = mem.raw_slice_data(signalSemaphores),
+    };
 
     vk.reset_fences(vkc.device, 1, &vkc.inFlightFences[vkc.currentFrame]);
 
-    if vk.queue_submit(vkc.graphicsQueue, 1, &submitInfo, vkc.inFlightFences[vkc.currentFrame]) != vk.Result.Success {
+    if (vk.queue_submit(vkc.graphicsQueue, 1, &submitInfo, vkc.inFlightFences[vkc.currentFrame]) != vk.Result.Success) {
         return false;
     }
 
-    presentInfo := vk.PresentInfoKHR{};
-    presentInfo.sType = vk.StructureType.PresentInfoKhr;
-
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = mem.raw_slice_data(signalSemaphores);
-
     swapChains := []vk.SwapchainKHR{vkc.swapChain};
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = mem.raw_slice_data(swapChains);
+    presentInfo := vk.PresentInfoKHR{
+        sType = vk.StructureType.PresentInfoKhr,
+        waitSemaphoreCount = 1,
+        pWaitSemaphores = mem.raw_slice_data(signalSemaphores),
+        swapchainCount = 1,
+        pSwapchains = mem.raw_slice_data(swapChains),
+        pImageIndices = &imageIndex,
+    };
 
-    presentInfo.pImageIndices = &imageIndex;
+    result := vk.queue_present_khr(vkc.presentQueue, &presentInfo);
 
-    vk.queue_present_khr(vkc.presentQueue, &presentInfo);
+    if result == vk.Result.ErrorOutOfDateKhr || result == vk.Result.SuboptimalKhr || vkc.framebufferResized {
+        vkc.framebufferResized = false;
+        if !recreate_swap_chain(vkc) {
+            fmt.println("failed to recreate swap chain");
+            return false;
+        }
+        return true;
+    } else if result != vk.Result.Success {
+        return false;
+    }
 
     vkc.currentFrame = (vkc.currentFrame + 1) % max_frames_in_flight;
     return true;
 }
 
+cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
+    for framebuffer, _ in vkc.swapChainFramebuffers {
+        vk.destroy_framebuffer(vkc.device, framebuffer, nil);
+    }
 
+    vk.free_command_buffers(vkc.device, vkc.commandPool, u32(len(vkc.commandBuffers)), mem.raw_slice_data(vkc.commandBuffers));
+    delete(vkc.commandBuffers);
+
+    vk.destroy_pipeline(vkc.device, vkc.graphicsPipeline, nil);
+    vk.destroy_pipeline_layout(vkc.device, vkc.pipelineLayout, nil);
+    vk.destroy_render_pass(vkc.device, vkc.renderPass, nil);
+
+    for imageView, _ in vkc.swapChainImageViews {
+        vk.destroy_image_view(vkc.device, imageView, nil);
+    }
+
+    vk.destroy_swapchain_khr(vkc.device, vkc.swapChain, nil);
+
+    return true;
+}
+
+recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
+    fmt.print("recreating the swap chain...");
+
+    if vkc.width == 0 || vkc.height == 0 do return true;
+
+    vk.device_wait_idle(vkc.device);
+
+    if !cleanup_swap_chain(vkc) {
+        fmt.println("Failed to clean up swap chain");
+        return false;
+    }
+
+    if !create_swap_chain(vkc) {
+        fmt.println("failed create_swap_chain");
+        return false;
+    }
+    if !create_image_views(vkc) {
+        fmt.println("failed create_image_views");
+        return false;
+    }
+    if !create_render_pass(vkc) {
+        fmt.println("failed create_render_pass");
+        return false;
+    }
+    if !create_graphics_pipeline(vkc) {
+        fmt.println("failed create_graphics_pipeline");
+        return false;
+    }
+    if !create_framebuffers(vkc) {
+        fmt.println("failed create_framebuffers");
+        return false;
+    }
+    if !create_command_buffers(vkc) {
+        fmt.println("failed create_command_buffers");
+        return false;
+    }
+    fmt.println("done");
+    return true;
+}
 
 main :: proc() {
     vkc : VulkanContext;
@@ -780,11 +854,17 @@ main :: proc() {
         "hello_sdl2",
         cast(i32)sdl.Window_Pos.Undefined, cast(i32)sdl.Window_Pos.Undefined,
         screen_width, screen_height,
-        sdl.Window_Flags.Shown | sdl.Window_Flags.Vulkan);
+        sdl.Window_Flags.Shown | sdl.Window_Flags.Vulkan | sdl.Window_Flags.Resizable);
     if window == nil {
         fmt.printf("could not create window: {}\n", sdl.get_error());
         return;
     }
+    vkc.window = window;
+    width, height: i32;
+    sdl.get_window_size(vkc.window,&width,&height);
+    vkc.width = u32(width);
+    vkc.height = u32(height);
+    defer sdl.destroy_window(window);
 
     ok = create_surface(&vkc, window);
     if !ok {
@@ -853,12 +933,59 @@ main :: proc() {
 
     defer cleanup(&vkc);
 
+    if !draw_frame(&vkc, window) {
+        fmt.println("Could not draw frame");
+        return;
+    }
+    sdl.update_window_surface(window);
+
+    event: sdl.Event;
+    stop:
     for {
-        sdl.update_window_surface(window);
-        if !draw_frame(&vkc) {
-            fmt.println("Could not draw frame");
-            return;
+        for sdl.poll_event(&event) != 0 {
+            #partial switch event.type {
+            case sdl.Event_Type.Quit:
+                break stop;
+            case sdl.Event_Type.Window_Event:
+                #partial switch event.window.event {
+                case sdl.Window_Event_ID.Resized:
+                    fmt.println("RESIZED!!");
+                    vkc.framebufferResized = true;
+                    fmt.printf("new size: %d %d\n",event.window.data1,event.window.data2);
+                    vkc.width = u32(event.window.data1);
+                    vkc.height = u32(event.window.data2);
+                    // sdl.set_window_size(vkc.window,event.window.data1,event.window.data2);
+                    if !draw_frame(&vkc, window) {
+                        fmt.println("Could not draw frame");
+                        return;
+                    }
+                    sdl.update_window_surface(window);
+                case sdl.Window_Event_ID.Exposed:
+                    fmt.println("EXPOSED!!");
+                    if !draw_frame(&vkc, window) {
+                        fmt.println("Could not draw frame");
+                        return;
+                    }
+                    sdl.update_window_surface(window);
+                case sdl.Window_Event_ID.Shown:
+                    fmt.println("SHOWN!!");
+                    if !draw_frame(&vkc, window) {
+                        fmt.println("Could not draw frame");
+                        return;
+                    }
+                    sdl.update_window_surface(window);
+                }
+            case:
+                fmt.printf("event.type: %d\n",event.type);
+                // do nothing
+            }
+            // if !draw_frame(&vkc, window) {
+            //     fmt.println("Could not draw frame");
+            //     return;
+            // }
+            // sdl.update_window_surface(window);
         }
+        // sdl.update_window_surface(window);
     }
 
 
@@ -879,5 +1006,4 @@ main :: proc() {
     // // sdl.fill_rect(screenSurface, nil, sdl.map_rgb(screenSurface.format, 0xFF, 0xFF, 0xFF));
     // sdl.update_window_surface(window);
 
-    sdl.delay(5000);
 }
