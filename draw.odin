@@ -2,11 +2,13 @@ package main
 
 import "core:fmt"
 import "core:mem"
+import rt "core:runtime"
 import "core:math/bits"
 import "core:os"
 import sdl "shared:sdl2"
 // import img "shared:sdl2/image"
 import vk "shared:vulkan"
+import lin "core:math/linalg"
 
 screen_width :: 640;
 screen_height :: 480;
@@ -39,12 +41,25 @@ VulkanContext :: struct {
     renderFinishedSemaphores: []vk.Semaphore,
     inFlightFences: []vk.Fence,
     imagesInFlight: []vk.Fence,
+    vertexBuffer: vk.Buffer,
+    vertexBufferMemory: vk.DeviceMemory,
     currentFrame: int,
     window: ^sdl.Window,
     framebufferResized: bool,
     width: u32,
     height: u32,
 }
+
+Vertex :: struct {
+    pos: lin.Vector2,
+    color: lin.Vector3,
+};
+
+vertices :: []Vertex {
+    {{0.0, -0.5}, {1.0, 0.0, 0.0}},
+    {{0.5, 0.5}, {0.0, 1.0, 0.0}},
+    {{-0.5, 0.5}, {0.0, 0.0, 1.0}},
+};
 
 extensions :: []cstring {
     vk.KHR_SURFACE_EXTENSION_NAME,
@@ -57,6 +72,89 @@ extensions :: []cstring {
 device_extensions :: []cstring {
     vk.KHR_SWAPCHAIN_EXTENSION_NAME,
 };
+
+get_binding_description :: proc() -> vk.VertexInputBindingDescription {
+    bindingDescription := vk.VertexInputBindingDescription{
+        binding = 0,
+        stride = size_of(Vertex),
+        inputRate = vk.VertexInputRate.Vertex,
+    };
+
+    return bindingDescription;
+}
+
+
+get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
+    attributeDescriptions := []vk.VertexInputAttributeDescription{
+        {
+            binding = 0,
+            location = 0,
+            format = vk.Format.R32G32Sfloat,
+            offset = u32(offset_of(Vertex,pos)),
+        },
+        {
+            binding = 0,
+            location = 1,
+            format = vk.Format.R32G32B32Sfloat,
+            offset = u32(offset_of(Vertex,color)),
+        },
+    };
+
+    return attributeDescriptions;
+}
+
+find_memory_type :: proc(vkc:^VulkanContext, typeFilter:u32, properties: vk.MemoryPropertyFlags) -> (u32, bool) {
+    memProperties := vk.PhysicalDeviceMemoryProperties{};
+    vk.get_physical_device_memory_properties(vkc.physicalDevice, &memProperties);
+
+    for i : u32 = 0; i < memProperties.memoryTypeCount; i += 1 {
+        if (typeFilter & (1 << i)) != 0 && (memProperties.memoryTypes[i].propertyFlags & properties) == properties {
+            return i, true;
+        }
+    }
+
+    return 0, false;
+}
+
+create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
+    bufferInfo := vk.BufferCreateInfo {
+        sType = vk.StructureType.BufferCreateInfo,
+        size = u64(size_of(vertices[0]) * len(vertices)),
+        usage = u32(vk.BufferUsageFlagBits.VertexBuffer),
+        sharingMode = vk.SharingMode.Exclusive,
+    };
+
+    if (vk.create_buffer(vkc.device, &bufferInfo, nil, &vkc.vertexBuffer) != vk.Result.Success) {
+        return false;
+    }
+
+    memRequirements: vk.MemoryRequirements;
+    vk.get_buffer_memory_requirements(vkc.device, vkc.vertexBuffer, &memRequirements);
+
+    memoryTypeIndex, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, u32(vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent));
+
+    if !ok {
+        return false;
+    }
+
+    allocInfo := vk.MemoryAllocateInfo{
+        sType = vk.StructureType.MemoryAllocateInfo,
+        allocationSize = memRequirements.size,
+        memoryTypeIndex = memoryTypeIndex,
+    };
+
+    if vk.allocate_memory(vkc.device, &allocInfo, nil, &vkc.vertexBufferMemory) != vk.Result.Success {
+        return false;
+    }
+
+    vk.bind_buffer_memory(vkc.device, vkc.vertexBuffer, vkc.vertexBufferMemory, 0);
+
+    data: rawptr;
+    vk.map_memory(vkc.device, vkc.vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+    rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices), int(bufferInfo.size));
+    vk.unmap_memory(vkc.device, vkc.vertexBufferMemory);
+    return true;
+}
 
 create_instance :: proc(vkc : ^VulkanContext) {
     // @todo Enable validation layers?
@@ -389,11 +487,17 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 
     shaderStages := []vk.PipelineShaderStageCreateInfo{vertShaderStageInfo, fragShaderStageInfo};
 
+    bindingDescription := get_binding_description();
+    attributeDescriptions := get_attribute_descriptions();
 
-    vertexInputInfo := vk.PipelineVertexInputStateCreateInfo{};
-    vertexInputInfo.sType = vk.StructureType.PipelineVertexInputStateCreateInfo;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+
+    vertexInputInfo := vk.PipelineVertexInputStateCreateInfo{
+        sType = vk.StructureType.PipelineVertexInputStateCreateInfo,
+        vertexBindingDescriptionCount = 1,
+        vertexAttributeDescriptionCount = u32(len(attributeDescriptions)),
+        pVertexBindingDescriptions = &bindingDescription,
+        pVertexAttributeDescriptions = mem.raw_slice_data(attributeDescriptions),
+    };
 
     inputAssembly := vk.PipelineInputAssemblyStateCreateInfo{};
     inputAssembly.sType = vk.StructureType.PipelineInputAssemblyStateCreateInfo;
@@ -482,6 +586,9 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 
 cleanup :: proc(vkc: ^VulkanContext) {
     cleanup_swap_chain(vkc);
+
+    vk.destroy_buffer(vkc.device,vkc.vertexBuffer,nil);
+    vk.free_memory(vkc.device, vkc.vertexBufferMemory, nil);
 
     for i := 0; i < max_frames_in_flight; i += 1 {
         vk.destroy_semaphore(vkc.device, vkc.renderFinishedSemaphores[i], nil);
@@ -631,11 +738,12 @@ create_command_pool :: proc(vkc: ^VulkanContext) -> bool {
 create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
     vkc.commandBuffers = make([]vk.CommandBuffer,len(vkc.swapChainFramebuffers));
 
-    allocInfo := vk.CommandBufferAllocateInfo{};
-    allocInfo.sType = vk.StructureType.CommandBufferAllocateInfo;
-    allocInfo.commandPool = vkc.commandPool;
-    allocInfo.level = vk.CommandBufferLevel.Primary;
-    allocInfo.commandBufferCount = u32(len(vkc.commandBuffers));
+    allocInfo := vk.CommandBufferAllocateInfo{
+        sType = vk.StructureType.CommandBufferAllocateInfo,
+        commandPool = vkc.commandPool,
+        level = vk.CommandBufferLevel.Primary,
+        commandBufferCount = u32(len(vkc.commandBuffers)),
+    };
 
     if vk.allocate_command_buffers(vkc.device, &allocInfo, mem.raw_slice_data(vkc.commandBuffers)) != vk.Result.Success {
         return false;
@@ -666,7 +774,12 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 
         vk.cmd_bind_pipeline(cb, vk.PipelineBindPoint.Graphics, vkc.graphicsPipeline);
 
-        vk.cmd_draw(cb, 3, 1, 0, 0);
+        vertexBuffers := []vk.Buffer{vkc.vertexBuffer};
+        offsets := []vk.DeviceSize{0};
+        vk.cmd_bind_vertex_buffers(vkc.commandBuffers[i], 0, 1, mem.raw_slice_data(vertexBuffers), mem.raw_slice_data(offsets));
+        vk.cmd_draw(vkc.commandBuffers[i], u32(len(vertices)), 1, 0, 0);
+
+        // vk.cmd_draw(cb, 3, 1, 0, 0);
 
         vk.cmd_end_render_pass(cb);
 
@@ -918,6 +1031,11 @@ main :: proc() {
 
     if !create_command_pool(&vkc) {
         fmt.println("Could not create command pool");
+        return;
+    }
+
+    if !create_vertex_buffer(&vkc) {
+        fmt.println("Could not create vertex buffers");
         return;
     }
 
