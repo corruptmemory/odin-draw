@@ -43,6 +43,8 @@ VulkanContext :: struct {
     imagesInFlight: []vk.Fence,
     vertexBuffer: vk.Buffer,
     vertexBufferMemory: vk.DeviceMemory,
+    indexBuffer: vk.Buffer,
+    indexBufferMemory: vk.DeviceMemory,
     currentFrame: int,
     window: ^sdl.Window,
     framebufferResized: bool,
@@ -56,10 +58,13 @@ Vertex :: struct {
 };
 
 vertices :: []Vertex {
-    {{0.0, -0.5}, {1.0, 0.0, 0.0}},
-    {{0.5, 0.5}, {0.0, 1.0, 0.0}},
-    {{-0.5, 0.5}, {0.0, 0.0, 1.0}},
+    {{-0.5, -0.5}, {1.0, 0.0, 0.0}},
+    {{0.5, -0.5}, {0.0, 1.0, 0.0}},
+    {{0.5, 0.5}, {0.0, 0.0, 1.0}},
+    {{-0.5, 0.5}, {1.0, 1.0, 1.0}},
 };
+
+indices :: []u16 {0,1,2,2,3,0};
 
 extensions :: []cstring {
     vk.KHR_SURFACE_EXTENSION_NAME,
@@ -116,22 +121,22 @@ find_memory_type :: proc(vkc:^VulkanContext, typeFilter:u32, properties: vk.Memo
     return 0, false;
 }
 
-create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
+create_buffer :: proc(vkc: ^VulkanContext, size: vk.DeviceSize, usage: vk.BufferUsageFlagBits, properties: vk.MemoryPropertyFlagBits, buffer: ^vk.Buffer, bufferMemory: ^vk.DeviceMemory) -> bool {
     bufferInfo := vk.BufferCreateInfo {
         sType = vk.StructureType.BufferCreateInfo,
-        size = u64(size_of(vertices[0]) * len(vertices)),
-        usage = u32(vk.BufferUsageFlagBits.VertexBuffer),
+        size = u64(size),
+        usage = u32(usage),
         sharingMode = vk.SharingMode.Exclusive,
     };
 
-    if (vk.create_buffer(vkc.device, &bufferInfo, nil, &vkc.vertexBuffer) != vk.Result.Success) {
+    if (vk.create_buffer(vkc.device, &bufferInfo, nil, buffer) != vk.Result.Success) {
         return false;
     }
 
     memRequirements: vk.MemoryRequirements;
-    vk.get_buffer_memory_requirements(vkc.device, vkc.vertexBuffer, &memRequirements);
+    vk.get_buffer_memory_requirements(vkc.device, buffer^, &memRequirements);
 
-    memoryTypeIndex, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, u32(vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent));
+    memoryTypeIndex, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, u32(properties));
 
     if !ok {
         return false;
@@ -143,17 +148,97 @@ create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
         memoryTypeIndex = memoryTypeIndex,
     };
 
-    if vk.allocate_memory(vkc.device, &allocInfo, nil, &vkc.vertexBufferMemory) != vk.Result.Success {
+    if vk.allocate_memory(vkc.device, &allocInfo, nil, bufferMemory) != vk.Result.Success {
         return false;
     }
 
-    vk.bind_buffer_memory(vkc.device, vkc.vertexBuffer, vkc.vertexBufferMemory, 0);
+    vk.bind_buffer_memory(vkc.device, buffer^, bufferMemory^, 0);
+    return true;
+}
+
+create_index_buffer :: proc(vkc: ^VulkanContext) -> bool {
+    bufferSize : vk.DeviceSize = u64(size_of(indices[0]) * len(indices));
+
+    stagingBuffer : vk.Buffer;
+    stagingBufferMemory : vk.DeviceMemory;
+    create_buffer(vkc, bufferSize, vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &stagingBuffer, &stagingBufferMemory);
+
+    data : rawptr;
+    vk.map_memory(vkc.device, stagingBufferMemory, 0, bufferSize, 0, &data);
+    rt.mem_copy_non_overlapping(data, mem.raw_slice_data(indices), int(bufferSize));
+    vk.unmap_memory(vkc.device, stagingBufferMemory);
+
+    create_buffer(vkc,bufferSize, vk.BufferUsageFlagBits.TransferDst | vk.BufferUsageFlagBits.IndexBuffer, vk.MemoryPropertyFlagBits.DeviceLocal, &vkc.indexBuffer, &vkc.indexBufferMemory);
+
+    copy_buffer(vkc,stagingBuffer, vkc.indexBuffer, bufferSize);
+
+    vk.destroy_buffer(vkc.device, stagingBuffer, nil);
+    vk.free_memory(vkc.device, stagingBufferMemory, nil);
+
+    return true;
+}
+
+create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
+    bufferSize : vk.DeviceSize = u64(size_of(vertices[0]) * len(vertices));
+
+    stagingBuffer: vk.Buffer;
+    stagingBufferMemory: vk.DeviceMemory;
+    if !create_buffer(vkc,bufferSize,vk.BufferUsageFlagBits.TransferSrc,vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent,&stagingBuffer,&stagingBufferMemory) {
+        return false;
+    }
 
     data: rawptr;
-    vk.map_memory(vkc.device, vkc.vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-    rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices), int(bufferInfo.size));
-    vk.unmap_memory(vkc.device, vkc.vertexBufferMemory);
+    vk.map_memory(vkc.device, stagingBufferMemory, 0, bufferSize, 0, &data);
+    rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices), int(bufferSize));
+    vk.unmap_memory(vkc.device, stagingBufferMemory);
+
+    if !create_buffer(vkc,bufferSize,vk.BufferUsageFlagBits.TransferDst | vk.BufferUsageFlagBits.VertexBuffer, vk.MemoryPropertyFlagBits.DeviceLocal,&vkc.vertexBuffer,&vkc.vertexBufferMemory) {
+        return false;
+    }
+
+    copy_buffer(vkc,stagingBuffer,vkc.vertexBuffer,bufferSize);
+
+    vk.destroy_buffer(vkc.device,stagingBuffer,nil);
+    vk.free_memory(vkc.device,stagingBufferMemory,nil);
+
     return true;
+}
+
+copy_buffer :: proc(vkc: ^VulkanContext, srcBuffer: vk.Buffer, dstBuffer: vk.Buffer, size: vk.DeviceSize) {
+    allocInfo := vk.CommandBufferAllocateInfo{
+        sType = vk.StructureType.CommandBufferAllocateInfo,
+        level = vk.CommandBufferLevel.Primary,
+        commandPool = vkc.commandPool,
+        commandBufferCount = 1,
+    };
+
+    commandBuffer: vk.CommandBuffer;
+    vk.allocate_command_buffers(vkc.device, &allocInfo, &commandBuffer);
+
+    beginInfo := vk.CommandBufferBeginInfo{
+        sType = vk.StructureType.CommandBufferBeginInfo,
+        flags = u32(vk.CommandBufferUsageFlagBits.OneTimeSubmit),
+    };
+
+    vk.begin_command_buffer(commandBuffer, &beginInfo);
+
+    copyRegion := vk.BufferCopy{
+        size = size,
+    };
+    vk.cmd_copy_buffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+    vk.end_command_buffer(commandBuffer);
+
+    submitInfo := vk.SubmitInfo{
+        sType = vk.StructureType.SubmitInfo,
+        commandBufferCount = 1,
+        pCommandBuffers = &commandBuffer,
+    };
+
+    vk.queue_submit(vkc.graphicsQueue, 1, &submitInfo, nil);
+    vk.queue_wait_idle(vkc.graphicsQueue);
+
+    vk.free_command_buffers(vkc.device, vkc.commandPool, 1, &commandBuffer);
 }
 
 create_instance :: proc(vkc : ^VulkanContext) {
@@ -587,6 +672,8 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 cleanup :: proc(vkc: ^VulkanContext) {
     cleanup_swap_chain(vkc);
 
+    vk.destroy_buffer(vkc.device,vkc.indexBuffer,nil);
+    vk.free_memory(vkc.device, vkc.indexBufferMemory, nil);
     vk.destroy_buffer(vkc.device,vkc.vertexBuffer,nil);
     vk.free_memory(vkc.device, vkc.vertexBufferMemory, nil);
 
@@ -777,7 +864,8 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
         vertexBuffers := []vk.Buffer{vkc.vertexBuffer};
         offsets := []vk.DeviceSize{0};
         vk.cmd_bind_vertex_buffers(vkc.commandBuffers[i], 0, 1, mem.raw_slice_data(vertexBuffers), mem.raw_slice_data(offsets));
-        vk.cmd_draw(vkc.commandBuffers[i], u32(len(vertices)), 1, 0, 0);
+        vk.cmd_bind_index_buffer(vkc.commandBuffers[i],vkc.indexBuffer,0,vk.IndexType.Uint16);
+        vk.cmd_draw_indexed(vkc.commandBuffers[i], u32(len(indices)), 1, 0, 0, 0);
 
         // vk.cmd_draw(cb, 3, 1, 0, 0);
 
@@ -1036,6 +1124,11 @@ main :: proc() {
 
     if !create_vertex_buffer(&vkc) {
         fmt.println("Could not create vertex buffers");
+        return;
+    }
+
+    if !create_index_buffer(&vkc) {
+        fmt.println("Could not create index buffers");
         return;
     }
 
