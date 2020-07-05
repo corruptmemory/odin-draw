@@ -23,6 +23,7 @@ UniformBufferObject :: struct {
 
 VulkanContext :: struct {
     instance : vk.Instance,
+    enableValidationLayers : bool,
     device: vk.Device,
     physicalDevice: vk.PhysicalDevice,
     surface: vk.SurfaceKHR,
@@ -87,9 +88,42 @@ extensions :: []cstring {
     vk.KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
 };
 
+validation_layers :: []cstring {
+    "VK_LAYER_KHRONOS_validation",
+};
+
 device_extensions :: []cstring {
     vk.KHR_SWAPCHAIN_EXTENSION_NAME,
 };
+
+check_validation_layer_support :: proc() -> bool {
+    layerCount: u32;
+    vk.enumerate_instance_layer_properties(&layerCount, nil);
+
+    availableLayers := make([]vk.LayerProperties,layerCount);
+    vk.enumerate_instance_layer_properties(&layerCount, mem.raw_slice_data(availableLayers));
+
+    for layerName, _ in validation_layers {
+        layerFound := false;
+
+        for _, i in availableLayers {
+            layerProperties := availableLayers[i];
+
+            if layerName == transmute(cstring)(&layerProperties.layerName) {
+                layerFound = true;
+                break;
+            }
+        }
+
+        if !layerFound {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
 
 get_binding_description :: proc() -> vk.VertexInputBindingDescription {
     bindingDescription := vk.VertexInputBindingDescription{
@@ -254,8 +288,13 @@ copy_buffer :: proc(vkc: ^VulkanContext, srcBuffer: vk.Buffer, dstBuffer: vk.Buf
     vk.free_command_buffers(vkc.device, vkc.commandPool, 1, &commandBuffer);
 }
 
-create_instance :: proc(vkc : ^VulkanContext) {
+create_instance :: proc(vkc : ^VulkanContext) -> bool {
     // @todo Enable validation layers?
+    if vkc.enableValidationLayers && !check_validation_layer_support() {
+        fmt.println("Could not find validation layer support");
+        return false;
+    }
+
 
     // Application info
     applicationInfo : vk.ApplicationInfo;
@@ -265,11 +304,19 @@ create_instance :: proc(vkc : ^VulkanContext) {
     applicationInfo.apiVersion = vk.API_VERSION_1_1;
 
     // Instance info
-    instanceCreateInfo : vk.InstanceCreateInfo;
-    instanceCreateInfo.sType = vk.StructureType.InstanceCreateInfo;
-    instanceCreateInfo.pApplicationInfo = &applicationInfo;
-    instanceCreateInfo.enabledExtensionCount = u32(len(extensions));
-    instanceCreateInfo.ppEnabledExtensionNames = mem.raw_slice_data(extensions);
+    instanceCreateInfo := vk.InstanceCreateInfo{
+        sType = vk.StructureType.InstanceCreateInfo,
+        pApplicationInfo = &applicationInfo,
+        enabledExtensionCount = u32(len(extensions)),
+        ppEnabledExtensionNames = mem.raw_slice_data(extensions),
+    };
+
+    if vkc.enableValidationLayers {
+        instanceCreateInfo.enabledLayerCount = u32(len(validation_layers));
+        instanceCreateInfo.ppEnabledLayerNames = mem.raw_slice_data(validation_layers);
+    } else {
+        instanceCreateInfo.enabledLayerCount = 0;
+    }
 
     result := vk.create_instance(&instanceCreateInfo, nil, &vkc.instance);
     if result == vk.Result.Success {
@@ -277,9 +324,10 @@ create_instance :: proc(vkc : ^VulkanContext) {
     }
     else {
         fmt.println("Unable to create instance!");
-        return;
+        return false;
     }
 
+    return true;
 }
 
 is_device_suitable :: proc(physicalDevice: vk.PhysicalDevice) -> bool {
