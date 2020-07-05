@@ -16,6 +16,6 @@ run: shaders/vert.spv shaders/frag.spv
 	odin run draw.odin -vet -collection:shared=./external
 
 clean:
-	rm -f *.spv
-	rm draw
+	rm -f shaders/*.spv
+	rm -f draw
 	rm -f odin-draw.ll odin-draw.o odin-draw.bc

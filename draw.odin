@@ -9,10 +9,17 @@ import sdl "shared:sdl2"
 // import img "shared:sdl2/image"
 import vk "shared:vulkan"
 import lin "core:math/linalg"
+import time "core:time"
 
 screen_width :: 640;
 screen_height :: 480;
 max_frames_in_flight :: 2;
+
+UniformBufferObject :: struct {
+    model: lin.Matrix4,
+    view: lin.Matrix4,
+    proj: lin.Matrix4,
+}
 
 VulkanContext :: struct {
     instance : vk.Instance,
@@ -45,9 +52,15 @@ VulkanContext :: struct {
     vertexBufferMemory: vk.DeviceMemory,
     indexBuffer: vk.Buffer,
     indexBufferMemory: vk.DeviceMemory,
+    descriptorSetLayout: vk.DescriptorSetLayout,
+    uniformBuffers: []vk.Buffer,
+    uniformBuffersMemory: []vk.DeviceMemory,
+    descriptorPool: vk.DescriptorPool,
+    descriptorSets: []vk.DescriptorSet,
     currentFrame: int,
     window: ^sdl.Window,
     framebufferResized: bool,
+    startTime: time.Time,
     width: u32,
     height: u32,
 }
@@ -615,7 +628,7 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     rasterizer.polygonMode = vk.PolygonMode.Fill;
     rasterizer.lineWidth = 1.0;
     rasterizer.cullMode = u32(vk.CullModeFlagBits.Back);
-    rasterizer.frontFace = vk.FrontFace.Clockwise;
+    rasterizer.frontFace = vk.FrontFace.CounterClockwise;
     rasterizer.depthBiasEnable = vk.FALSE;
 
     multisampling := vk.PipelineMultisampleStateCreateInfo{};
@@ -638,10 +651,11 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     colorBlending.blendConstants[2] = 0.0;
     colorBlending.blendConstants[3] = 0.0;
 
-    pipelineLayoutInfo := vk.PipelineLayoutCreateInfo{};
-    pipelineLayoutInfo.sType = vk.StructureType.PipelineLayoutCreateInfo;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo := vk.PipelineLayoutCreateInfo{
+        sType = vk.StructureType.PipelineLayoutCreateInfo,
+        setLayoutCount = 1,
+        pSetLayouts = &vkc.descriptorSetLayout,
+    };
 
     if (vk.create_pipeline_layout(vkc.device, &pipelineLayoutInfo, nil, &vkc.pipelineLayout) != vk.Result.Success) {
         return false;
@@ -672,6 +686,7 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 cleanup :: proc(vkc: ^VulkanContext) {
     cleanup_swap_chain(vkc);
 
+    vk.destroy_descriptor_set_layout(vkc.device, vkc.descriptorSetLayout, nil);
     vk.destroy_buffer(vkc.device,vkc.indexBuffer,nil);
     vk.free_memory(vkc.device, vkc.indexBufferMemory, nil);
     vk.destroy_buffer(vkc.device,vkc.vertexBuffer,nil);
@@ -837,19 +852,21 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
     }
 
     for cb, i in vkc.commandBuffers {
-        beginInfo := vk.CommandBufferBeginInfo{};
-        beginInfo.sType = vk.StructureType.CommandBufferBeginInfo;
+        beginInfo := vk.CommandBufferBeginInfo{sType = vk.StructureType.CommandBufferBeginInfo};
 
         if vk.begin_command_buffer(cb, &beginInfo) != vk.Result.Success {
             return false;
         }
 
-        renderPassInfo := vk.RenderPassBeginInfo{};
-        renderPassInfo.sType = vk.StructureType.RenderPassBeginInfo;
-        renderPassInfo.renderPass = vkc.renderPass;
-        renderPassInfo.framebuffer = vkc.swapChainFramebuffers[i];
-        renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = vkc.swapChainExtent;
+        renderPassInfo := vk.RenderPassBeginInfo{
+            sType = vk.StructureType.RenderPassBeginInfo,
+            renderPass = vkc.renderPass,
+            framebuffer = vkc.swapChainFramebuffers[i],
+            renderArea = {
+                offset = {0, 0},
+                extent = vkc.swapChainExtent,
+            },
+        };
 
         clearColor := vk.ClearValue{};
         clearColor.color.float32 = {0.0, 0.0, 0.0, 1.0};
@@ -865,6 +882,7 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
         offsets := []vk.DeviceSize{0};
         vk.cmd_bind_vertex_buffers(vkc.commandBuffers[i], 0, 1, mem.raw_slice_data(vertexBuffers), mem.raw_slice_data(offsets));
         vk.cmd_bind_index_buffer(vkc.commandBuffers[i],vkc.indexBuffer,0,vk.IndexType.Uint16);
+        vk.cmd_bind_descriptor_sets(vkc.commandBuffers[i], vk.PipelineBindPoint.Graphics, vkc.pipelineLayout, 0, 1, &vkc.descriptorSets[i], 0, nil);
         vk.cmd_draw_indexed(vkc.commandBuffers[i], u32(len(indices)), 1, 0, 0, 0);
 
         // vk.cmd_draw(cb, 3, 1, 0, 0);
@@ -875,6 +893,101 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
             return false;
         }
     }
+    return true;
+}
+
+create_descriptor_layout :: proc(vkc: ^VulkanContext) -> bool {
+    uboLayoutBinding := vk.DescriptorSetLayoutBinding{
+        binding = 0,
+        descriptorCount = 1,
+        descriptorType = vk.DescriptorType.UniformBuffer,
+        pImmutableSamplers = nil,
+        stageFlags = u32(vk.ShaderStageFlagBits.Vertex),
+    };
+
+    layoutInfo := vk.DescriptorSetLayoutCreateInfo{
+        sType = vk.StructureType.DescriptorSetLayoutCreateInfo,
+        bindingCount = 1,
+        pBindings = &uboLayoutBinding,
+    };
+
+    if vk.create_descriptor_set_layout(vkc.device, &layoutInfo, nil, &vkc.descriptorSetLayout) != vk.Result.Success {
+        return false;
+    }
+
+    return true;
+}
+
+create_uniform_buffers :: proc(vkc: ^VulkanContext) -> bool {
+    bufferSize := vk.DeviceSize(size_of(UniformBufferObject));
+
+    vkc.uniformBuffers = make([]vk.Buffer,len(vkc.swapChainImages));
+    vkc.uniformBuffersMemory = make([]vk.DeviceMemory,len(vkc.swapChainImages));
+
+    for _, i in vkc.swapChainImages {
+        create_buffer(vkc, bufferSize, vk.BufferUsageFlagBits.UniformBuffer, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &vkc.uniformBuffers[i], &vkc.uniformBuffersMemory[i]);
+    }
+    return true;
+}
+
+
+create_descriptor_pool :: proc(vkc: ^VulkanContext) -> bool {
+    poolSize := vk.DescriptorPoolSize {
+        type = vk.DescriptorType.UniformBuffer,
+        descriptorCount = u32(len(vkc.swapChainImages)),
+    };
+
+    poolInfo := vk.DescriptorPoolCreateInfo {
+        sType = vk.StructureType.DescriptorPoolCreateInfo,
+        poolSizeCount = 1,
+        pPoolSizes = &poolSize,
+        maxSets = u32(len(vkc.swapChainImages)),
+    };
+
+    if vk.create_descriptor_pool(vkc.device, &poolInfo, nil, &vkc.descriptorPool) != vk.Result.Success {
+        return false;
+    }
+
+    return true;
+}
+
+create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
+    layouts := make([]vk.DescriptorSetLayout,len(vkc.swapChainImages));
+    for _, i in layouts {
+        layouts[i] = vkc.descriptorSetLayout;
+    }
+    allocInfo := vk.DescriptorSetAllocateInfo{
+        sType = vk.StructureType.DescriptorSetAllocateInfo,
+        descriptorPool = vkc.descriptorPool,
+        descriptorSetCount = u32(len(vkc.swapChainImages)),
+        pSetLayouts = mem.raw_slice_data(layouts),
+    };
+
+    vkc.descriptorSets = make([]vk.DescriptorSet,len(vkc.swapChainImages));
+
+    if vk.allocate_descriptor_sets(vkc.device,&allocInfo,mem.raw_slice_data(vkc.descriptorSets)) != vk.Result.Success {
+        return false;
+    }
+
+    for _, i in vkc.swapChainImages {
+        bufferInfo := vk.DescriptorBufferInfo{
+            buffer = vkc.uniformBuffers[i],
+            offset = 0,
+            range = size_of(UniformBufferObject),
+        };
+
+        descriptorWrite := vk.WriteDescriptorSet{
+            sType = vk.StructureType.WriteDescriptorSet,
+            dstSet = vkc.descriptorSets[i],
+            dstBinding = 0,
+            dstArrayElement = 0,
+            descriptorType = vk.DescriptorType.UniformBuffer,
+            descriptorCount = 1,
+            pBufferInfo = &bufferInfo,
+        };
+        vk.update_descriptor_sets(vkc.device, 1, &descriptorWrite, 0, nil);
+    }
+
     return true;
 }
 
@@ -902,6 +1015,25 @@ create_sync_objects :: proc(vkc: ^VulkanContext) -> bool {
     return true;
 }
 
+update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32) {
+    now := time.now();
+    diff := time.duration_seconds(time.diff(vkc.startTime,now));
+
+    ubo := UniformBufferObject {
+        model = lin.matrix4_rotate(lin.Float(diff)*lin.radians(90),lin.VECTOR3_Z_AXIS),
+        view = lin.matrix4_look_at(lin.Vector3{2,2,2},lin.Vector3{0,0,0},lin.VECTOR3_Z_AXIS),
+        proj = lin.matrix4_perspective(lin.radians(45),lin.Float(vkc.swapChainExtent.width)/lin.Float(vkc.swapChainExtent.height),0.1,10),
+    };
+
+    ubo.proj[1][1] *= -1;
+
+    data: rawptr;
+    vk.map_memory(vkc.device,vkc.uniformBuffersMemory[currentImage],0,size_of(ubo),0,&data);
+    fmt.println("size_of(ubo) = ", size_of(ubo));
+    rt.mem_copy_non_overlapping(data,&ubo,size_of(ubo));
+    vk.unmap_memory(vkc.device,vkc.uniformBuffersMemory[currentImage]);
+}
+
 draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
     vk.wait_for_fences(vkc.device, 1, &vkc.inFlightFences[vkc.currentFrame], vk.TRUE, bits.U64_MAX);
 
@@ -915,6 +1047,8 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
             return false;
     }
 
+    fmt.println("about to call update_uniform_buffer");
+    update_uniform_buffer(vkc, imageIndex);
 
     if vkc.imagesInFlight[imageIndex] != nil {
         vk.wait_for_fences(vkc.device, 1, &vkc.imagesInFlight[imageIndex], vk.TRUE, bits.U64_MAX);
@@ -924,6 +1058,7 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
     waitSemaphores := []vk.Semaphore{vkc.imageAvailableSemaphores[vkc.currentFrame]};
     waitStages := []vk.PipelineStageFlags{u32(vk.PipelineStageFlagBits.ColorAttachmentOutput)};
     signalSemaphores := []vk.Semaphore{vkc.renderFinishedSemaphores[vkc.currentFrame]};
+
 
     submitInfo := vk.SubmitInfo{
         sType = vk.StructureType.SubmitInfo,
@@ -973,9 +1108,12 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     for framebuffer, _ in vkc.swapChainFramebuffers {
         vk.destroy_framebuffer(vkc.device, framebuffer, nil);
     }
+    delete(vkc.swapChainFramebuffers);
+    vkc.swapChainFramebuffers = nil;
 
     vk.free_command_buffers(vkc.device, vkc.commandPool, u32(len(vkc.commandBuffers)), mem.raw_slice_data(vkc.commandBuffers));
     delete(vkc.commandBuffers);
+    vkc.commandBuffers = nil;
 
     vk.destroy_pipeline(vkc.device, vkc.graphicsPipeline, nil);
     vk.destroy_pipeline_layout(vkc.device, vkc.pipelineLayout, nil);
@@ -984,8 +1122,21 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     for imageView, _ in vkc.swapChainImageViews {
         vk.destroy_image_view(vkc.device, imageView, nil);
     }
+    delete(vkc.swapChainImageViews);
+    vkc.swapChainImageViews = nil;
 
     vk.destroy_swapchain_khr(vkc.device, vkc.swapChain, nil);
+
+    for i := 0; i < len(vkc.swapChainImages); i += 1 {
+        vk.destroy_buffer(vkc.device, vkc.uniformBuffers[i], nil);
+        vk.free_memory(vkc.device, vkc.uniformBuffersMemory[i], nil);
+    }
+    delete(vkc.uniformBuffers);
+    delete(vkc.uniformBuffersMemory);
+    vkc.uniformBuffers = nil;
+    vkc.uniformBuffersMemory = nil;
+
+    vk.destroy_descriptor_pool(vkc.device, vkc.descriptorPool, nil);
 
     return true;
 }
@@ -1022,6 +1173,18 @@ recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
         fmt.println("failed create_framebuffers");
         return false;
     }
+    if !create_uniform_buffers(vkc) {
+        fmt.println("failed create_uniform_buffers");
+        return false;
+    }
+    if !create_descriptor_pool(vkc) {
+        fmt.println("failed create_descriptor_pool");
+        return false;
+    }
+    if !create_descriptor_sets(vkc) {
+        fmt.println("failed create_descriptor_sets");
+        return false;
+    }
     if !create_command_buffers(vkc) {
         fmt.println("failed create_command_buffers");
         return false;
@@ -1038,6 +1201,7 @@ main :: proc() {
     }
     defer sdl.quit();
 
+    vkc.startTime = time.now();
     create_instance(&vkc);
 
     ok := pick_physical_device(&vkc);
@@ -1107,6 +1271,11 @@ main :: proc() {
         return;
     }
 
+    if !create_descriptor_layout(&vkc) {
+        fmt.println("Could not create descriptor layout");
+        return;
+    }
+
     if !create_graphics_pipeline(&vkc) {
         fmt.println("Could not create graphics pipeline");
         return;
@@ -1129,6 +1298,21 @@ main :: proc() {
 
     if !create_index_buffer(&vkc) {
         fmt.println("Could not create index buffers");
+        return;
+    }
+
+    if !create_uniform_buffers(&vkc) {
+        fmt.println("Could not create uniform buffers");
+        return;
+    }
+
+    if !create_descriptor_pool(&vkc) {
+        fmt.println("Could not create descriptor pool");
+        return;
+    }
+
+    if !create_descriptor_sets(&vkc) {
+        fmt.println("Could not create descriptor sets");
         return;
     }
 
