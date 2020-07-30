@@ -10,6 +10,7 @@ import sdl "shared:sdl2"
 import vk "shared:vulkan"
 import lin "core:math/linalg"
 import time "core:time"
+import img "shared:sdl2/image"
 
 screen_width :: 640;
 screen_height :: 480;
@@ -62,6 +63,8 @@ VulkanContext :: struct {
     window: ^sdl.Window,
     framebufferResized: bool,
     startTime: time.Time,
+    textureImage: vk.Image,
+    textureImageMemory: vk.DeviceMemory,
     width: u32,
     height: u32,
 }
@@ -1152,6 +1155,84 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
     return true;
 }
 
+create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format, tiling: vk.ImageTiling, usage: vk.ImageUsageFlags, properties: vk.MemoryPropertyFlags, image: ^vk.Image, imageMemory: ^vk.DeviceMemory) -> bool {
+    imageInfo := vk.ImageCreateInfo{
+        sType = vk.StructureType.ImageCreateInfo,
+        imageType = vk.ImageType._2D,
+        extent = vk.Extent3D {
+                width = width,
+                height = height,
+                depth = 1,
+            },
+        format = format, // vk.Format.R8G8B8A8Srgb,
+        tiling = tiling, // vk.ImageTiling.Optimal,
+        initialLayout = vk.ImageLayout.Undefined,
+        usage = usage, // u32(vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled),
+        sharingMode = vk.SharingMode.Exclusive,
+        samples = vk.SampleCountFlagBits._1,
+        mipLevels = 1,
+        arrayLayers = 1,
+        flags = 0,
+    };
+
+    if vk.create_image(vkc.device, &imageInfo, nil, image) != vk.Result.Success {
+        fmt.println("failed to create image!");
+        return false;
+    }
+
+    memRequirements: vk.MemoryRequirements;
+    vk.get_image_memory_requirements(vkc.device, image^, &memRequirements);
+
+    memoryType, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, properties);
+    if !ok {
+        return false;
+    }
+
+    allocInfo := vk.MemoryAllocateInfo{
+        sType = vk.StructureType.MemoryAllocateInfo,
+        allocationSize = memRequirements.size,
+        memoryTypeIndex = memoryType,
+    };
+
+    if vk.allocate_memory(vkc.device, &allocInfo, nil, imageMemory) != vk.Result.Success {
+        fmt.println("failed to allocate image memory!");
+        return false;
+    }
+
+    vk.bind_image_memory(vkc.device, image^, imageMemory^, 0);
+    return true;
+}
+
+
+create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
+    surface := img.load("textures/texture.jpg");
+
+    if surface == nil {
+        fmt.println("failed to load texture");
+        return false;
+    }
+
+    stagingBuffer: vk.Buffer;
+    stagingBufferMemory: vk.DeviceMemory;
+    imageSize := surface.w * surface.h * i32(surface.format.bytes_per_pixel);
+
+    create_buffer(vkc, u64(imageSize), vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &stagingBuffer, &stagingBufferMemory);
+
+    data: rawptr;
+    vk.map_memory(vkc.device, stagingBufferMemory, 0, u64(imageSize), 0, &data);
+    rt.mem_copy_non_overlapping(data, surface.pixels, int(imageSize));
+    vk.unmap_memory(vkc.device, stagingBufferMemory);
+
+    sdl.free_surface(surface);
+
+    if !create_image(vkc,u32(surface.w),u32(surface.h),vk.Format.R8G8B8A8Srgb,vk.ImageTiling.Optimal,u32(vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled),u32(vk.MemoryPropertyFlagBits.DeviceLocal),&vkc.textureImage,&vkc.textureImageMemory) {
+        fmt.println("could not create texture image");
+        return false;
+    }
+
+    return true;
+}
+
 cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     for framebuffer, _ in vkc.swapChainFramebuffers {
         vk.destroy_framebuffer(vkc.device, framebuffer, nil);
@@ -1336,6 +1417,11 @@ main :: proc() {
 
     if !create_command_pool(&vkc) {
         fmt.println("Could not create command pool");
+        return;
+    }
+
+    if !create_texture_image(&vkc) {
+        fmt.println("Could not load texture image");
         return;
     }
 
