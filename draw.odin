@@ -6,7 +6,7 @@ import rt "core:runtime"
 import "core:math/bits"
 import "core:os"
 import sdl "shared:sdl2"
-// import img "shared:sdl2/image"
+import img "shared:sdl2/image"
 import vk "shared:vulkan"
 import lin "core:math/linalg"
 import time "core:time"
@@ -62,6 +62,10 @@ VulkanContext :: struct {
     window: ^sdl.Window,
     framebufferResized: bool,
     startTime: time.Time,
+    textureImage: vk.Image,
+    textureImageMemory: vk.DeviceMemory,
+    textureImageView: vk.ImageView,
+    textureSampler: vk.Sampler,
     width: u32,
     height: u32,
 }
@@ -69,13 +73,14 @@ VulkanContext :: struct {
 Vertex :: struct {
     pos: lin.Vector2,
     color: lin.Vector3,
+    texCoord: lin.Vector2,
 };
 
 vertices :: []Vertex {
-    {{-0.5, -0.5}, {1.0, 0.0, 0.0}},
-    {{0.5, -0.5}, {0.0, 1.0, 0.0}},
-    {{0.5, 0.5}, {0.0, 0.0, 1.0}},
-    {{-0.5, 0.5}, {1.0, 1.0, 1.0}},
+    {{-0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
+    {{0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
+    {{0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
+    {{-0.5, 0.5}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
 };
 
 indices :: []u16 {0,1,2,2,3,0};
@@ -149,6 +154,12 @@ get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
             location = 1,
             format = vk.Format.R32G32B32Sfloat,
             offset = u32(offset_of(Vertex,color)),
+        },
+        {
+            binding = 0,
+            location = 2,
+            format = vk.Format.R32G32Sfloat,
+            offset = u32(offset_of(Vertex, texCoord)),
         },
     };
 
@@ -335,12 +346,12 @@ is_device_suitable :: proc(physicalDevice: vk.PhysicalDevice) -> bool {
     vk.get_physical_device_properties(physicalDevice, &deviceProperties);
     deviceFeatures : vk.PhysicalDeviceFeatures;
     vk.get_physical_device_features(physicalDevice, &deviceFeatures);
-    if deviceProperties.deviceType == vk.PhysicalDeviceType.DiscreteGpu && deviceFeatures.geometryShader != 0 {
+    if deviceProperties.deviceType == vk.PhysicalDeviceType.DiscreteGpu && deviceFeatures.geometryShader != 0 && deviceFeatures.samplerAnisotropy != 0 {
         return true;
     }
-    // if deviceFeatures.geometryShader != 0 {
-    //     return true;
-    // }
+    if deviceFeatures.geometryShader != 0 && deviceFeatures.samplerAnisotropy != 0 {
+        return true;
+    }
     return false;
 }
 
@@ -353,6 +364,7 @@ pick_physical_device :: proc(vkc: ^VulkanContext) -> bool {
     fmt.println("Found", physicalDevicesCount, "physical devices.");
     for pd, _ in physicalDevices {
         if is_device_suitable(pd) {
+            fmt.println("** picked a physical device");
             vkc.physicalDevice = pd;
             return true;
         }
@@ -411,7 +423,9 @@ create_logical_device :: proc(vkc: ^VulkanContext) -> bool {
         queueCreateInfos[i] = queueCreateInfo;
     }
 
-    deviceFeatures : vk.PhysicalDeviceFeatures;
+    deviceFeatures := vk.PhysicalDeviceFeatures {
+        samplerAnisotropy = vk.TRUE,
+    };
 
     createInfo : vk.DeviceCreateInfo;
     createInfo.sType = vk.StructureType.DeviceCreateInfo;
@@ -480,24 +494,30 @@ check_device_extension_support :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 query_swap_chain_support :: proc(vkc: ^VulkanContext) -> bool {
+    fmt.println("get_physical_device_surface_capabilities_khr");
+    fmt.printf("vkc.physicalDevice: %v\n", vkc.physicalDevice);
     if vk.get_physical_device_surface_capabilities_khr(vkc.physicalDevice, vkc.surface, &vkc.capabilities) != vk.Result.Success {
         return false;
     }
 
     formatCount:u32;
+    fmt.println("get_physical_device_surface_formats_khr");
     vk.get_physical_device_surface_formats_khr(vkc.physicalDevice, vkc.surface, &formatCount, nil);
     if formatCount == 0 {
         return false;
     }
     vkc.formats = make([]vk.SurfaceFormatKHR,formatCount);
+    fmt.println("get_physical_device_surface_formats_khr");
     vk.get_physical_device_surface_formats_khr(vkc.physicalDevice, vkc.surface, &formatCount, mem.raw_slice_data(vkc.formats));
 
     presentModeCount:u32;
+    fmt.println("get_physical_device_surface_present_modes_khr");
     vk.get_physical_device_surface_present_modes_khr(vkc.physicalDevice, vkc.surface, &presentModeCount, nil);
     if presentModeCount == 0 {
         return false;
     }
     vkc.presentModes = make([]vk.PresentModeKHR,presentModeCount);
+    fmt.println("get_physical_device_surface_present_modes_khr");
     vk.get_physical_device_surface_present_modes_khr(vkc.physicalDevice, vkc.surface, &presentModeCount, mem.raw_slice_data(vkc.presentModes));
     return true;
 }
@@ -734,6 +754,13 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 cleanup :: proc(vkc: ^VulkanContext) {
     cleanup_swap_chain(vkc);
 
+    vk.destroy_sampler(vkc.device, vkc.textureSampler, nil);
+    vk.destroy_image_view(vkc.device, vkc.textureImageView, nil);
+
+    vk.destroy_image_view(vkc.device, vkc.textureImageView, nil);
+    vk.destroy_image(vkc.device, vkc.textureImage, nil);
+    vk.free_memory(vkc.device, vkc.textureImageMemory, nil);
+
     vk.destroy_descriptor_set_layout(vkc.device, vkc.descriptorSetLayout, nil);
     vk.destroy_buffer(vkc.device,vkc.indexBuffer,nil);
     vk.free_memory(vkc.device, vkc.indexBufferMemory, nil);
@@ -852,24 +879,11 @@ read_file :: proc(filename: string) -> ([]byte, bool) {
 create_image_views :: proc(vkc: ^VulkanContext) -> bool {
     vkc.swapChainImageViews = make([]vk.ImageView,len(vkc.swapChainImages));
     for _, i in vkc.swapChainImageViews {
-        createInfo := vk.ImageViewCreateInfo{};
-        createInfo.sType = vk.StructureType.ImageViewCreateInfo;
-        createInfo.image = vkc.swapChainImages[i];
-        createInfo.viewType = vk.ImageViewType._2D;
-        createInfo.format = vkc.swapChainImageFormat;
-        createInfo.components.r = vk.ComponentSwizzle.Identity;
-        createInfo.components.g = vk.ComponentSwizzle.Identity;
-        createInfo.components.b = vk.ComponentSwizzle.Identity;
-        createInfo.components.a = vk.ComponentSwizzle.Identity;
-        createInfo.subresourceRange.aspectMask = u32(vk.ImageAspectFlagBits.Color);
-        createInfo.subresourceRange.baseMipLevel = 0;
-        createInfo.subresourceRange.levelCount = 1;
-        createInfo.subresourceRange.baseArrayLayer = 0;
-        createInfo.subresourceRange.layerCount = 1;
-
-        if vk.create_image_view(vkc.device, &createInfo, nil, &vkc.swapChainImageViews[i]) != vk.Result.Success {
+        view, result := create_image_view(vkc, vkc.swapChainImages[i], vkc.swapChainImageFormat);
+        if !result {
             return false;
         }
+        vkc.swapChainImageViews[i] = view;
     }
     return true;
 }
@@ -953,10 +967,19 @@ create_descriptor_layout :: proc(vkc: ^VulkanContext) -> bool {
         stageFlags = u32(vk.ShaderStageFlagBits.Vertex),
     };
 
-    layoutInfo := vk.DescriptorSetLayoutCreateInfo{
+    samplerLayoutBinding := vk.DescriptorSetLayoutBinding {
+        binding = 1,
+        descriptorCount = 1,
+        descriptorType = vk.DescriptorType.CombinedImageSampler,
+        pImmutableSamplers = nil,
+        stageFlags = u32(vk.ShaderStageFlagBits.Fragment),
+    };
+
+    bindings := []vk.DescriptorSetLayoutBinding{uboLayoutBinding, samplerLayoutBinding};
+    layoutInfo := vk.DescriptorSetLayoutCreateInfo {
         sType = vk.StructureType.DescriptorSetLayoutCreateInfo,
-        bindingCount = 1,
-        pBindings = &uboLayoutBinding,
+        bindingCount = u32(len(bindings)),
+        pBindings = mem.raw_slice_data(bindings),
     };
 
     if vk.create_descriptor_set_layout(vkc.device, &layoutInfo, nil, &vkc.descriptorSetLayout) != vk.Result.Success {
@@ -980,15 +1003,21 @@ create_uniform_buffers :: proc(vkc: ^VulkanContext) -> bool {
 
 
 create_descriptor_pool :: proc(vkc: ^VulkanContext) -> bool {
-    poolSize := vk.DescriptorPoolSize {
-        type = vk.DescriptorType.UniformBuffer,
-        descriptorCount = u32(len(vkc.swapChainImages)),
+    poolSize := []vk.DescriptorPoolSize {
+        {
+            type = vk.DescriptorType.UniformBuffer,
+            descriptorCount = u32(len(vkc.swapChainImages)),
+        },
+        {
+            type = vk.DescriptorType.CombinedImageSampler,
+            descriptorCount = u32(len(vkc.swapChainImages)),
+        },
     };
 
     poolInfo := vk.DescriptorPoolCreateInfo {
         sType = vk.StructureType.DescriptorPoolCreateInfo,
-        poolSizeCount = 1,
-        pPoolSizes = &poolSize,
+        poolSizeCount = u32(len(poolSize)),
+        pPoolSizes = mem.raw_slice_data(poolSize),
         maxSets = u32(len(vkc.swapChainImages)),
     };
 
@@ -1024,17 +1053,237 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
             range = size_of(UniformBufferObject),
         };
 
-        descriptorWrite := vk.WriteDescriptorSet{
-            sType = vk.StructureType.WriteDescriptorSet,
-            dstSet = vkc.descriptorSets[i],
-            dstBinding = 0,
-            dstArrayElement = 0,
-            descriptorType = vk.DescriptorType.UniformBuffer,
-            descriptorCount = 1,
-            pBufferInfo = &bufferInfo,
+        imageInfo := vk.DescriptorImageInfo {
+            imageLayout = vk.ImageLayout.ShaderReadOnlyOptimal,
+            imageView = vkc.textureImageView,
+            sampler = vkc.textureSampler,
         };
-        vk.update_descriptor_sets(vkc.device, 1, &descriptorWrite, 0, nil);
+
+        descriptorWrite := []vk.WriteDescriptorSet {
+            {
+                sType = vk.StructureType.WriteDescriptorSet,
+                dstSet = vkc.descriptorSets[i],
+                dstBinding = 0,
+                dstArrayElement = 0,
+                descriptorType = vk.DescriptorType.UniformBuffer,
+                descriptorCount = 1,
+                pBufferInfo = &bufferInfo,
+            },
+            {
+                sType = vk.StructureType.WriteDescriptorSet,
+                dstSet = vkc.descriptorSets[i],
+                dstBinding = 1,
+                dstArrayElement = 0,
+                descriptorType = vk.DescriptorType.CombinedImageSampler,
+                descriptorCount = 1,
+                pImageInfo = &imageInfo,
+            },
+        };
+        vk.update_descriptor_sets(vkc.device, u32(len(descriptorWrite)), mem.raw_slice_data(descriptorWrite), 0, nil);
     }
+
+    return true;
+}
+
+sdl_pixeltype_packed32 :: 6;
+sdl_packedorder_rgba :: 4;
+sdl_packedlayout_8888 :: 6;
+
+// SDL_DEFINE_PIXELFORMAT(SDL_PIXELTYPE_PACKED32, SDL_PACKEDORDER_RGBA,
+//                                SDL_PACKEDLAYOUT_8888, 32, 4),
+
+sdl_define_pixelformat :: proc(type, order , layout, bits, bytes: u32) -> u32 {
+    return ((1 << 28) | ((type) << 24) | ((order) << 20) | ((layout) << 16) | ((bits) << 8) | ((bytes) << 0));
+}
+
+sdl_pixelformat_rgba8888 := sdl_define_pixelformat(sdl_pixeltype_packed32, sdl_packedorder_rgba, sdl_packedlayout_8888, 32, 4);
+
+create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format) -> (vk.ImageView, bool) {
+ viewInfo := vk.ImageViewCreateInfo {
+        sType = vk.StructureType.ImageViewCreateInfo,
+        image = image,
+        viewType = vk.ImageViewType._2D,
+        format = format,
+        subresourceRange = {
+            aspectMask = u32(vk.ImageAspectFlagBits.Color),
+            baseMipLevel = 0,
+            levelCount = 1,
+            baseArrayLayer = 0,
+            layerCount = 1,
+        },
+    };
+
+
+    imageView: vk.ImageView;
+    if vk.create_image_view(vkc.device, &viewInfo, nil, &imageView) != vk.Result.Success {
+        return nil, false;
+    }
+
+    return imageView, true;
+}
+
+create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
+        samplerInfo := vk.SamplerCreateInfo{
+            sType = vk.StructureType.SamplerCreateInfo,
+            magFilter = vk.Filter.Linear,
+            minFilter = vk.Filter.Linear,
+            addressModeU = vk.SamplerAddressMode.Repeat,
+            addressModeV = vk.SamplerAddressMode.Repeat,
+            addressModeW = vk.SamplerAddressMode.Repeat,
+            anisotropyEnable = vk.TRUE,
+            maxAnisotropy = 16.0,
+            borderColor = vk.BorderColor.IntOpaqueBlack,
+            unnormalizedCoordinates = vk.FALSE,
+            compareEnable = vk.FALSE,
+            compareOp = vk.CompareOp.Always,
+            mipmapMode = vk.SamplerMipmapMode.Linear,
+            mipLodBias = 0.0,
+            minLod = 0.0,
+            maxLod = 0.0,
+        };
+
+        if vk.create_sampler(vkc.device, &samplerInfo, nil, &vkc.textureSampler) != vk.Result.Success {
+            fmt.println("failed to create texture sampler!");
+            return false;
+        }
+        return true;
+}
+
+create_texture_image_view :: proc(vkc: ^VulkanContext) -> bool {
+    textureImageView, result := create_image_view(vkc, vkc.textureImage, vk.Format.R8G8B8A8Srgb);
+    vkc.textureImageView = textureImageView;
+    return result;
+}
+
+
+// void createTextureImage() {
+//     int texWidth, texHeight, texChannels;
+//     stbi_uc* pixels = stbi_load("textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+//     VkDeviceSize imageSize = texWidth * texHeight * 4;
+
+//     if (!pixels) {
+//         throw std::runtime_error("failed to load texture image!");
+//     }
+
+//     VkBuffer stagingBuffer;
+//     VkDeviceMemory stagingBufferMemory;
+//     createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+//     void* data;
+//     vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
+//         memcpy(data, pixels, static_cast<size_t>(imageSize));
+//     vkUnmapMemory(device, stagingBufferMemory);
+
+//     stbi_image_free(pixels);
+
+//     createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+
+//     transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+//         copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+//     transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+//     vkDestroyBuffer(device, stagingBuffer, nullptr);
+//     vkFreeMemory(device, stagingBufferMemory, nullptr);
+// }
+
+create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
+    origImageSurface := img.load("textures/texture.jpg");
+    if origImageSurface == nil {
+        fmt.println("Error loading texture image");
+        return false;
+    }
+    texWidth := origImageSurface.w;
+    texHeight := origImageSurface.h;
+    // texChannels := 4;
+    targetSurface := sdl.create_rgb_surface_with_format(0, origImageSurface.w, origImageSurface.h, 32, sdl_pixelformat_rgba8888);
+    defer sdl.free_surface(origImageSurface);
+    rect := sdl.Rect {
+        x = 0,
+        y = 0,
+        w = origImageSurface.w,
+        h = origImageSurface.h,
+    };
+    err := sdl.upper_blit(origImageSurface,&rect,targetSurface,&rect);
+    if err != 0 {
+        fmt.printf("Error blitting texture image to target surface: %d\n", err);
+        return false;
+    }
+    imageSize : vk.DeviceSize = u64(texWidth * texHeight * 4);
+    fmt.printf("imageSize: %d\n", imageSize);
+    stagingBuffer : vk.Buffer;
+    stagingBufferMemory : vk.DeviceMemory;
+    create_buffer(vkc, imageSize, vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &stagingBuffer, &stagingBufferMemory);
+
+    data: rawptr;
+    vk.map_memory(vkc.device, stagingBufferMemory, 0, imageSize, 0, &data);
+    sdl.lock_surface(targetSurface);
+    // fmt.printf("pixels: %v\n", targetSurface.pixels);
+    // for y := 0; y < int(texHeight); y += 1 {
+    //     fmt.printf("[%d]: ",y);
+    //     for x := 0; x < int(texWidth); x += 1 {
+    //         fmt.printf("%x ",(^u32)(mem.ptr_offset(transmute(^u8)targetSurface.pixels, (y*int(texWidth)) + (x*4)))^);
+    //     }
+    //     fmt.println();
+    // }
+    rt.mem_copy_non_overlapping(data, targetSurface.pixels, int(imageSize));
+    sdl.unlock_surface(targetSurface);
+    vk.unmap_memory(vkc.device, stagingBufferMemory);
+    defer sdl.free_surface(targetSurface);
+
+    if !create_image(vkc, u32(texWidth), u32(texHeight), vk.Format.R8G8B8A8Srgb,vk.ImageTiling.Optimal, vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled, vk.MemoryPropertyFlagBits.DeviceLocal, &vkc.textureImage, &vkc.textureImageMemory) {
+        fmt.println("Error: could not create image");
+        return false;
+    }
+
+    return true;
+}
+
+create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format, tiling: vk.ImageTiling, usage: vk.ImageUsageFlagBits, properties: vk.MemoryPropertyFlagBits, image: ^vk.Image, imageMemory: ^vk.DeviceMemory) -> bool {
+   imageInfo := vk.ImageCreateInfo{
+        sType = vk.StructureType.ImageCreateInfo,
+        imageType = vk.ImageType._2D,
+        extent = {
+                width = width,
+                height = height,
+                depth = 1,
+            },
+        mipLevels = 1,
+        arrayLayers = 1,
+        format = format,
+        tiling = tiling,
+        initialLayout = vk.ImageLayout.Undefined,
+        usage = u32(usage),
+        sharingMode = vk.SharingMode.Exclusive,
+        samples = vk.SampleCountFlagBits._1,
+        flags = 0,
+    };
+
+    if vk.create_image(vkc.device, &imageInfo, nil, &vkc.textureImage) != vk.Result.Success {
+        fmt.println("Failed to create image for the texture map");
+        return false;
+    }
+
+    memRequirements: vk.MemoryRequirements;
+    vk.get_image_memory_requirements(vkc.device,image^,&memRequirements);
+
+    mt, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, u32(properties));
+    if !ok {
+        fmt.println("Error: failed to find memory");
+        return false;
+    }
+
+    allocInfo := vk.MemoryAllocateInfo {
+        sType = vk.StructureType.MemoryAllocateInfo,
+        allocationSize = memRequirements.size,
+        memoryTypeIndex = mt,
+    };
+
+    if vk.allocate_memory(vkc.device, &allocInfo, nil, imageMemory) != vk.Result.Success {
+        fmt.println("Error: failed to allocate memory in device");
+        return false;
+    }
+
+    vk.bind_image_memory(vkc.device, image^, imageMemory^, 0);
 
     return true;
 }
@@ -1068,9 +1317,9 @@ update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32) {
     diff := time.duration_seconds(time.diff(vkc.startTime,now));
 
     ubo := UniformBufferObject {
-        model = lin.matrix4_rotate(lin.Float(diff)*lin.radians(90),lin.VECTOR3_Z_AXIS),
+        model = lin.matrix4_rotate(lin.Float(diff)*lin.radians(f32(90)),lin.VECTOR3_Z_AXIS),
         view = lin.matrix4_look_at(lin.Vector3{2,2,2},lin.Vector3{0,0,0},lin.VECTOR3_Z_AXIS),
-        proj = lin.matrix4_perspective(lin.radians(45),lin.Float(vkc.swapChainExtent.width)/lin.Float(vkc.swapChainExtent.height),0.1,10),
+        proj = lin.matrix4_perspective(lin.radians(f32(45)),lin.Float(vkc.swapChainExtent.width)/lin.Float(vkc.swapChainExtent.height),0.1,10),
     };
 
     ubo.proj[1][1] *= -1;
@@ -1252,6 +1501,7 @@ main :: proc() {
     vkc.startTime = time.now();
     create_instance(&vkc);
 
+    fmt.println(" pick_physical_device(&vkc);");
     ok := pick_physical_device(&vkc);
     if !ok {
         fmt.println("No suitable physical devices found.");
@@ -1279,30 +1529,35 @@ main :: proc() {
     vkc.height = u32(height);
     defer sdl.destroy_window(window);
 
+    fmt.println("create_surface(&vkc, window);");
     ok = create_surface(&vkc, window);
     if !ok {
         fmt.println("Could not create Vulkan surface.");
         return;
     }
 
+    fmt.println("find_queue_families(&vkc);");
     ok = find_queue_families(&vkc);
     if !ok {
         fmt.println("Could not retrieve queue families.");
         return;
     }
 
+    fmt.println("create_logical_device(&vkc);");
     ok = create_logical_device(&vkc);
     if !ok {
         fmt.println("Could not create logical device.");
         return;
     }
 
+    fmt.println("query_swap_chain_support(&vkc);");
     ok = query_swap_chain_support(&vkc);
     if !ok {
         fmt.println("Couldn't get swap chain support data.");
         return;
     }
 
+    fmt.println("create_swap_chain(&vkc);");
     ok = create_swap_chain(&vkc);
     if !ok {
         fmt.println("Could not get swap chain");
@@ -1336,6 +1591,24 @@ main :: proc() {
 
     if !create_command_pool(&vkc) {
         fmt.println("Could not create command pool");
+        return;
+    }
+
+    fmt.println("create_texture_image(&vkc)");
+    if !create_texture_image(&vkc) {
+        fmt.println("Could not create texture image");
+        return;
+    }
+
+    fmt.println("create_texture_image_view(&vkc)");
+    if !create_texture_image_view(&vkc) {
+        fmt.println("Could not create texture image view");
+        return;
+    }
+
+    fmt.println("create_texture_sampler(&vkc)");
+    if !create_texture_sampler(&vkc) {
+        fmt.println("Could not create texture sampler");
         return;
     }
 
@@ -1419,7 +1692,7 @@ main :: proc() {
                     sdl.update_window_surface(window);
                 }
             case:
-                fmt.printf("event.type: %d\n",event.type);
+                // fmt.printf("event.type: %d\n",event.type);
                 // do nothing
             }
             // if !draw_frame(&vkc, window) {

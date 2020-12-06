@@ -34,7 +34,7 @@ foreign lib {
 	@(link_name="SDL_AudioInit") audio_init :: proc(driver_name: cstring) -> i32																																---;
 	@(link_name="SDL_AudioQuit") audio_quit :: proc()																																						---;
 	@(link_name="SDL_BuildAudioCVT") build_audio_cvt :: proc(cvt: ^Audio_Cvt, src_format: Audio_Format, src_channels: u8, src_rate: i32, dst_format: Audio_Format, dst_channels: u8, dst_rate: i32) -> i32			---;
-	// @(link_name="SDL_BlitSurface") blit_surface :: proc(src: ^Surface, src_rect: ^Rect, dest: ^Surface, dest_rect: ^Rect) -> i32			---;
+	@(link_name="SDL_BlitSurface") blit_surface :: proc(src: ^Surface, src_rect: ^Rect, dest: ^Surface, dest_rect: ^Rect) -> i32			---;
 	@(link_name="SDL_CalculateGammaRamp") calculate_gamma_ramp :: proc(gamma: f32, ramp: ^u16)																																	---;
 	@(link_name="SDL_CaptureMouse") capture_mouse :: proc(enabled: Bool) -> i32																																	---;
 	@(link_name="SDL_ClearError") clear_error :: proc()																																						---;
