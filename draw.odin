@@ -10,7 +10,6 @@ import img "shared:sdl2/image"
 import vk "shared:vulkan"
 import lin "core:math/linalg"
 import time "core:time"
-import img "shared:sdl2/image"
 
 screen_width :: 640;
 screen_height :: 480;
@@ -640,17 +639,19 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     }
     defer vk.destroy_shader_module(vkc.device, fragShaderModule, nil);
 
-    vertShaderStageInfo := vk.PipelineShaderStageCreateInfo{};
-    vertShaderStageInfo.sType = vk.StructureType.PipelineShaderStageCreateInfo;
-    vertShaderStageInfo.stage = vk.ShaderStageFlagBits.Vertex;
-    vertShaderStageInfo.module = vertShaderModule;
-    vertShaderStageInfo.pName = "main";
+    vertShaderStageInfo := vk.PipelineShaderStageCreateInfo{
+        sType = vk.StructureType.PipelineShaderStageCreateInfo,
+        stage = vk.ShaderStageFlagBits.Vertex,
+        module = vertShaderModule,
+        pName = "main",
+    };
 
-    fragShaderStageInfo := vk.PipelineShaderStageCreateInfo{};
-    fragShaderStageInfo.sType = vk.StructureType.PipelineShaderStageCreateInfo;
-    fragShaderStageInfo.stage = vk.ShaderStageFlagBits.Fragment;
-    fragShaderStageInfo.module = fragShaderModule;
-    fragShaderStageInfo.pName = "main";
+    fragShaderStageInfo := vk.PipelineShaderStageCreateInfo{
+        sType = vk.StructureType.PipelineShaderStageCreateInfo,
+        stage = vk.ShaderStageFlagBits.Fragment,
+        module = fragShaderModule,
+        pName = "main",
+    };
 
     shaderStages := []vk.PipelineShaderStageCreateInfo{vertShaderStageInfo, fragShaderStageInfo};
 
@@ -666,18 +667,20 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
         pVertexAttributeDescriptions = mem.raw_slice_data(attributeDescriptions),
     };
 
-    inputAssembly := vk.PipelineInputAssemblyStateCreateInfo{};
-    inputAssembly.sType = vk.StructureType.PipelineInputAssemblyStateCreateInfo;
-    inputAssembly.topology = vk.PrimitiveTopology.TriangleList;
-    inputAssembly.primitiveRestartEnable = vk.FALSE;
+    inputAssembly := vk.PipelineInputAssemblyStateCreateInfo{
+        sType = vk.StructureType.PipelineInputAssemblyStateCreateInfo,
+        topology = vk.PrimitiveTopology.TriangleList,
+        primitiveRestartEnable = vk.FALSE,
+    };
 
-    viewport := vk.Viewport{};
-    viewport.x = 0.0;
-    viewport.y = 0.0;
-    viewport.width = f32(vkc.swapChainExtent.width);
-    viewport.height = f32(vkc.swapChainExtent.height);
-    viewport.minDepth = 0.0;
-    viewport.maxDepth = 1.0;
+    viewport := vk.Viewport{
+        x = 0.0,
+        y = 0.0,
+        width = f32(vkc.swapChainExtent.width),
+        height = f32(vkc.swapChainExtent.height),
+        minDepth = 0.0,
+        maxDepth = 1.0,
+    };
 
     scissor := vk.Rect2D{};
     scissor.offset = {0, 0};
@@ -756,8 +759,6 @@ cleanup :: proc(vkc: ^VulkanContext) {
     cleanup_swap_chain(vkc);
 
     vk.destroy_sampler(vkc.device, vkc.textureSampler, nil);
-    vk.destroy_image_view(vkc.device, vkc.textureImageView, nil);
-
     vk.destroy_image_view(vkc.device, vkc.textureImageView, nil);
     vk.destroy_image(vkc.device, vkc.textureImage, nil);
     vk.free_memory(vkc.device, vkc.textureImageMemory, nil);
@@ -1156,36 +1157,37 @@ create_texture_image_view :: proc(vkc: ^VulkanContext) -> bool {
     return result;
 }
 
+render_image :: proc(surface: ^sdl.Surface) {
+    window := sdl.create_window("SDL2 Displaying Image",
+        i32(sdl.Window_Pos.Undefined), i32(sdl.Window_Pos.Undefined), surface.w, surface.h, sdl.Window_Flags(0));
+    defer sdl.destroy_window(window);
 
-// void createTextureImage() {
-//     int texWidth, texHeight, texChannels;
-//     stbi_uc* pixels = stbi_load("textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-//     VkDeviceSize imageSize = texWidth * texHeight * 4;
+    renderer := sdl.create_renderer(window, -1, sdl.Renderer_Flags(0));
+    defer sdl.destroy_renderer(renderer);
 
-//     if (!pixels) {
-//         throw std::runtime_error("failed to load texture image!");
-//     }
+    texture := sdl.create_texture_from_surface(renderer, surface);
+    defer sdl.destroy_texture(texture);
 
-//     VkBuffer stagingBuffer;
-//     VkDeviceMemory stagingBufferMemory;
-//     createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+    sdl.render_copy(renderer, texture, nil, nil);
+    sdl.render_present(renderer);
 
-//     void* data;
-//     vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-//         memcpy(data, pixels, static_cast<size_t>(imageSize));
-//     vkUnmapMemory(device, stagingBufferMemory);
-
-//     stbi_image_free(pixels);
-
-//     createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
-
-//     transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-//         copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-//     transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-//     vkDestroyBuffer(device, stagingBuffer, nullptr);
-//     vkFreeMemory(device, stagingBufferMemory, nullptr);
-// }
+    event: sdl.Event;
+    stop:
+    for {
+        for sdl.wait_event(&event) != 0 {
+            #partial switch event.type {
+            case sdl.Event_Type.Quit:
+                break stop;
+            case sdl.Event_Type.Window_Event:
+                #partial switch event.window.event {
+                    case sdl.Window_Event_ID.Close:
+                        break stop;
+                    case:
+                }
+            }
+        }
+    }
+}
 
 create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
     origImageSurface := img.load("textures/texture.jpg");
@@ -1193,11 +1195,13 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
         fmt.println("Error loading texture image");
         return false;
     }
+    defer sdl.free_surface(origImageSurface);
     texWidth := origImageSurface.w;
     texHeight := origImageSurface.h;
     // texChannels := 4;
+    fmt.printf("sdl_pixelformat_rgba8888: %x\n",sdl_pixelformat_rgba8888);
     targetSurface := sdl.create_rgb_surface_with_format(0, origImageSurface.w, origImageSurface.h, 32, sdl_pixelformat_rgba8888);
-    defer sdl.free_surface(origImageSurface);
+    defer sdl.free_surface(targetSurface);
     rect := sdl.Rect {
         x = 0,
         y = 0,
@@ -1209,35 +1213,155 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
         fmt.printf("Error blitting texture image to target surface: %d\n", err);
         return false;
     }
+    render_image(targetSurface);
     imageSize : vk.DeviceSize = u64(texWidth * texHeight * 4);
+    fmt.printf("pitch: %d\n", targetSurface.pitch);
     fmt.printf("imageSize: %d\n", imageSize);
     stagingBuffer : vk.Buffer;
     stagingBufferMemory : vk.DeviceMemory;
-    create_buffer(vkc, imageSize, vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &stagingBuffer, &stagingBufferMemory);
+
+    if !create_buffer(vkc, imageSize, vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &stagingBuffer, &stagingBufferMemory) {
+        return false;
+    }
+    defer vk.destroy_buffer(vkc.device, stagingBuffer, nil);
+    defer vk.free_memory(vkc.device, stagingBufferMemory, nil);
 
     data: rawptr;
     vk.map_memory(vkc.device, stagingBufferMemory, 0, imageSize, 0, &data);
     sdl.lock_surface(targetSurface);
-    // fmt.printf("pixels: %v\n", targetSurface.pixels);
-    // for y := 0; y < int(texHeight); y += 1 {
-    //     fmt.printf("[%d]: ",y);
-    //     for x := 0; x < int(texWidth); x += 1 {
-    //         fmt.printf("%x ",(^u32)(mem.ptr_offset(transmute(^u8)targetSurface.pixels, (y*int(texWidth)) + (x*4)))^);
-    //     }
-    //     fmt.println();
-    // }
     rt.mem_copy_non_overlapping(data, targetSurface.pixels, int(imageSize));
     sdl.unlock_surface(targetSurface);
     vk.unmap_memory(vkc.device, stagingBufferMemory);
-    defer sdl.free_surface(targetSurface);
 
     if !create_image(vkc, u32(texWidth), u32(texHeight), vk.Format.R8G8B8A8Srgb,vk.ImageTiling.Optimal, vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled, vk.MemoryPropertyFlagBits.DeviceLocal, &vkc.textureImage, &vkc.textureImageMemory) {
         fmt.println("Error: could not create image");
         return false;
     }
 
+    if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8Srgb, vk.ImageLayout.Undefined, vk.ImageLayout.TransferDstOptimal) {
+        return false;
+    }
+    copy_buffer_to_image(vkc, stagingBuffer, vkc.textureImage, u32(texWidth), u32(texHeight));
+    if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8Srgb, vk.ImageLayout.TransferDstOptimal, vk.ImageLayout.ShaderReadOnlyOptimal) {
+        return false;
+    }
+
     return true;
 }
+
+
+copy_buffer_to_image :: proc(vkc: ^VulkanContext, buffer: vk.Buffer, image: vk.Image, width, height: u32) {
+    commandBuffer := begin_single_time_commands(vkc);
+
+    region := vk.BufferImageCopy{
+        bufferOffset = 0,
+        bufferRowLength = 0,
+        bufferImageHeight = 0,
+        imageSubresource = {
+            aspectMask =u32(vk.ImageAspectFlagBits.Color),
+            mipLevel = 0,
+            baseArrayLayer = 0,
+            layerCount = 1,
+        },
+        imageOffset = {0, 0, 0},
+        imageExtent = {width, height, 1},
+    };
+
+    vk.cmd_copy_buffer_to_image(commandBuffer, buffer, image, vk.ImageLayout.TransferDstOptimal, 1, &region);
+
+    end_single_time_commands(vkc, &commandBuffer);
+}
+
+begin_single_time_commands :: proc(vkc: ^VulkanContext) -> vk.CommandBuffer {
+    allocInfo := vk.CommandBufferAllocateInfo{
+        sType = vk.StructureType.CommandBufferAllocateInfo,
+        level = vk.CommandBufferLevel.Primary,
+        commandPool = vkc.commandPool,
+        commandBufferCount = 1,
+    };
+
+    commandBuffer := vk.CommandBuffer{};
+    vk.allocate_command_buffers(vkc.device, &allocInfo, &commandBuffer);
+
+    beginInfo := vk.CommandBufferBeginInfo{
+        sType = vk.StructureType.CommandBufferBeginInfo,
+        flags = u32(vk.CommandBufferUsageFlagBits.OneTimeSubmit),
+    };
+
+    vk.begin_command_buffer(commandBuffer, &beginInfo);
+
+    return commandBuffer;
+}
+
+end_single_time_commands :: proc(vkc: ^VulkanContext, commandBuffer: ^vk.CommandBuffer) {
+    vk.end_command_buffer(commandBuffer^);
+
+    submitInfo := vk.SubmitInfo{
+        sType = vk.StructureType.SubmitInfo,
+        commandBufferCount = 1,
+        pCommandBuffers = commandBuffer,
+    };
+
+    vk.queue_submit(vkc.graphicsQueue, 1, &submitInfo, nil);
+    vk.queue_wait_idle(vkc.graphicsQueue);
+
+    vk.free_command_buffers(vkc.device, vkc.commandPool, 1, commandBuffer);
+}
+
+transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format, oldLayout: vk.ImageLayout, newLayout: vk.ImageLayout) -> bool {
+    commandBuffer := begin_single_time_commands(vkc);
+
+    ufi : i32 = vk.QUEUE_FAMILY_IGNORED;
+
+    barrier := vk.ImageMemoryBarrier {
+        sType = vk.StructureType.ImageMemoryBarrier,
+        oldLayout = oldLayout,
+        newLayout = newLayout,
+        srcQueueFamilyIndex = transmute(u32)(ufi),
+        dstQueueFamilyIndex = transmute(u32)(ufi),
+        image = image,
+        subresourceRange = vk.ImageSubresourceRange{
+            aspectMask = u32(vk.ImageAspectFlagBits.Color),
+            baseMipLevel = 0,
+            levelCount = 1,
+            baseArrayLayer = 0,
+            layerCount = 1,
+        },
+    };
+
+    sourceStage: vk.PipelineStageFlags;
+    destinationStage: vk.PipelineStageFlags;
+
+    if oldLayout == vk.ImageLayout.Undefined && newLayout == vk.ImageLayout.TransferDstOptimal {
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = u32(vk.AccessFlagBits.TransferWrite);
+        sourceStage = u32(vk.PipelineStageFlagBits.TopOfPipe);
+        destinationStage = u32(vk.PipelineStageFlagBits.Transfer);
+    } else if oldLayout == vk.ImageLayout.TransferDstOptimal && newLayout == vk.ImageLayout.ShaderReadOnlyOptimal {
+        barrier.srcAccessMask = u32(vk.AccessFlagBits.TransferWrite);
+        barrier.dstAccessMask = u32(vk.AccessFlagBits.ShaderRead);
+
+        sourceStage = u32(vk.PipelineStageFlagBits.Transfer);
+        destinationStage = u32(vk.PipelineStageFlagBits.FragmentShader);
+    } else {
+        fmt.println("unsupported layout transition!");
+        return false;
+    }
+
+    vk.cmd_pipeline_barrier(
+        commandBuffer,
+        sourceStage, destinationStage,
+        0,
+        0, nil,
+        0, nil,
+        1, &barrier
+    );
+
+    end_single_time_commands(vkc, &commandBuffer);
+
+    return true;
+}
+
 
 create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format, tiling: vk.ImageTiling, usage: vk.ImageUsageFlagBits, properties: vk.MemoryPropertyFlagBits, image: ^vk.Image, imageMemory: ^vk.DeviceMemory) -> bool {
    imageInfo := vk.ImageCreateInfo{
@@ -1399,84 +1523,6 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
     }
 
     vkc.currentFrame = (vkc.currentFrame + 1) % max_frames_in_flight;
-    return true;
-}
-
-create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format, tiling: vk.ImageTiling, usage: vk.ImageUsageFlags, properties: vk.MemoryPropertyFlags, image: ^vk.Image, imageMemory: ^vk.DeviceMemory) -> bool {
-    imageInfo := vk.ImageCreateInfo{
-        sType = vk.StructureType.ImageCreateInfo,
-        imageType = vk.ImageType._2D,
-        extent = vk.Extent3D {
-                width = width,
-                height = height,
-                depth = 1,
-            },
-        format = format, // vk.Format.R8G8B8A8Srgb,
-        tiling = tiling, // vk.ImageTiling.Optimal,
-        initialLayout = vk.ImageLayout.Undefined,
-        usage = usage, // u32(vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled),
-        sharingMode = vk.SharingMode.Exclusive,
-        samples = vk.SampleCountFlagBits._1,
-        mipLevels = 1,
-        arrayLayers = 1,
-        flags = 0,
-    };
-
-    if vk.create_image(vkc.device, &imageInfo, nil, image) != vk.Result.Success {
-        fmt.println("failed to create image!");
-        return false;
-    }
-
-    memRequirements: vk.MemoryRequirements;
-    vk.get_image_memory_requirements(vkc.device, image^, &memRequirements);
-
-    memoryType, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, properties);
-    if !ok {
-        return false;
-    }
-
-    allocInfo := vk.MemoryAllocateInfo{
-        sType = vk.StructureType.MemoryAllocateInfo,
-        allocationSize = memRequirements.size,
-        memoryTypeIndex = memoryType,
-    };
-
-    if vk.allocate_memory(vkc.device, &allocInfo, nil, imageMemory) != vk.Result.Success {
-        fmt.println("failed to allocate image memory!");
-        return false;
-    }
-
-    vk.bind_image_memory(vkc.device, image^, imageMemory^, 0);
-    return true;
-}
-
-
-create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
-    surface := img.load("textures/texture.jpg");
-
-    if surface == nil {
-        fmt.println("failed to load texture");
-        return false;
-    }
-
-    stagingBuffer: vk.Buffer;
-    stagingBufferMemory: vk.DeviceMemory;
-    imageSize := surface.w * surface.h * i32(surface.format.bytes_per_pixel);
-
-    create_buffer(vkc, u64(imageSize), vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits.HostVisible | vk.MemoryPropertyFlagBits.HostCoherent, &stagingBuffer, &stagingBufferMemory);
-
-    data: rawptr;
-    vk.map_memory(vkc.device, stagingBufferMemory, 0, u64(imageSize), 0, &data);
-    rt.mem_copy_non_overlapping(data, surface.pixels, int(imageSize));
-    vk.unmap_memory(vkc.device, stagingBufferMemory);
-
-    sdl.free_surface(surface);
-
-    if !create_image(vkc,u32(surface.w),u32(surface.h),vk.Format.R8G8B8A8Srgb,vk.ImageTiling.Optimal,u32(vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled),u32(vk.MemoryPropertyFlagBits.DeviceLocal),&vkc.textureImage,&vkc.textureImageMemory) {
-        fmt.println("could not create texture image");
-        return false;
-    }
-
     return true;
 }
 

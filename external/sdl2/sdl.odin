@@ -1417,7 +1417,7 @@ Window_Event_ID :: enum u8 {
     Shown,
     Hidden,
     Exposed,
-	Moved,
+    Moved,
     Resized,
     Size_Changed,
     Minimized,
