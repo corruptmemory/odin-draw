@@ -128,8 +128,6 @@ check_validation_layer_support :: proc() -> bool {
     return true;
 }
 
-
-
 get_binding_description :: proc() -> vk.VertexInputBindingDescription {
     bindingDescription := vk.VertexInputBindingDescription{
         binding = 0,
@@ -139,7 +137,6 @@ get_binding_description :: proc() -> vk.VertexInputBindingDescription {
 
     return bindingDescription;
 }
-
 
 get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
     attributeDescriptions := []vk.VertexInputAttributeDescription{
@@ -359,6 +356,9 @@ pick_physical_device :: proc(vkc: ^VulkanContext) -> bool {
     // Find physical devices
     physicalDevicesCount : u32;
     vk.enumerate_physical_devices(vkc.instance, &physicalDevicesCount, nil);
+    if physicalDevicesCount == 0 {
+        return false;
+    }
     physicalDevices := make([]vk.PhysicalDevice, physicalDevicesCount);
     vk.enumerate_physical_devices(vkc.instance, &physicalDevicesCount, mem.raw_slice_data(physicalDevices));
     fmt.println("Found", physicalDevicesCount, "physical devices.");
@@ -613,7 +613,7 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
     return true;
 }
 
- create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
+create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
     vertShaderCode, ok := read_file("shaders/vert.spv");
     if !ok {
         return false;
@@ -1117,14 +1117,17 @@ create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Forma
 
 
     imageView: vk.ImageView;
-    if vk.create_image_view(vkc.device, &viewInfo, nil, &imageView) != vk.Result.Success {
-        return nil, false;
+    if vk.create_image_view(vkc.device, &viewInfo, nil, &imageView) == vk.Result.Success {
+        return imageView, true;
     }
 
-    return imageView, true;
+    return nil, false;
 }
 
 create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
+        properties: vk.PhysicalDeviceProperties;
+        vk.get_physical_device_properties(vkc.physicalDevice, &properties);
+
         samplerInfo := vk.SamplerCreateInfo{
             sType = vk.StructureType.SamplerCreateInfo,
             magFilter = vk.Filter.Linear,
@@ -1133,7 +1136,7 @@ create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
             addressModeV = vk.SamplerAddressMode.Repeat,
             addressModeW = vk.SamplerAddressMode.Repeat,
             anisotropyEnable = vk.TRUE,
-            maxAnisotropy = 16.0,
+            maxAnisotropy = properties.limits.maxSamplerAnisotropy,
             borderColor = vk.BorderColor.IntOpaqueBlack,
             unnormalizedCoordinates = vk.FALSE,
             compareEnable = vk.FALSE,
@@ -1198,8 +1201,6 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
     defer sdl.free_surface(origImageSurface);
     texWidth := origImageSurface.w;
     texHeight := origImageSurface.h;
-    // texChannels := 4;
-    fmt.printf("sdl_pixelformat_rgba8888: %x\n",sdl_pixelformat_rgba8888);
     targetSurface := sdl.create_rgb_surface_with_format(0, origImageSurface.w, origImageSurface.h, 32, sdl_pixelformat_rgba8888);
     defer sdl.free_surface(targetSurface);
     rect := sdl.Rect {
@@ -1213,10 +1214,8 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
         fmt.printf("Error blitting texture image to target surface: %d\n", err);
         return false;
     }
-    render_image(targetSurface);
+    // render_image(targetSurface);
     imageSize : vk.DeviceSize = u64(texWidth * texHeight * 4);
-    fmt.printf("pitch: %d\n", targetSurface.pitch);
-    fmt.printf("imageSize: %d\n", imageSize);
     stagingBuffer : vk.Buffer;
     stagingBufferMemory : vk.DeviceMemory;
 
@@ -1248,7 +1247,6 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 
     return true;
 }
-
 
 copy_buffer_to_image :: proc(vkc: ^VulkanContext, buffer: vk.Buffer, image: vk.Image, width, height: u32) {
     commandBuffer := begin_single_time_commands(vkc);
@@ -1362,7 +1360,6 @@ transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk
     return true;
 }
 
-
 create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format, tiling: vk.ImageTiling, usage: vk.ImageUsageFlagBits, properties: vk.MemoryPropertyFlagBits, image: ^vk.Image, imageMemory: ^vk.DeviceMemory) -> bool {
    imageInfo := vk.ImageCreateInfo{
         sType = vk.StructureType.ImageCreateInfo,
@@ -1383,7 +1380,7 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
         flags = 0,
     };
 
-    if vk.create_image(vkc.device, &imageInfo, nil, &vkc.textureImage) != vk.Result.Success {
+    if vk.create_image(vkc.device, &imageInfo, nil, image) != vk.Result.Success {
         fmt.println("Failed to create image for the texture map");
         return false;
     }
@@ -1719,19 +1716,16 @@ main :: proc() {
         return;
     }
 
-    fmt.println("create_texture_image(&vkc)");
     if !create_texture_image(&vkc) {
         fmt.println("Could not create texture image");
         return;
     }
 
-    fmt.println("create_texture_image_view(&vkc)");
     if !create_texture_image_view(&vkc) {
         fmt.println("Could not create texture image view");
         return;
     }
 
-    fmt.println("create_texture_sampler(&vkc)");
     if !create_texture_sampler(&vkc) {
         fmt.println("Could not create texture sampler");
         return;
