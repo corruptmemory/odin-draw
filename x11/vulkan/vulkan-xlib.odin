@@ -27,7 +27,7 @@ foreign import vulkan_xlib "system:vulkan"
 foreign vulkan_xlib {
 
     @(link_name="vkCreateXlibSurfaceKHR")
-    create_xlib_surface_khr :: proc(
+    CreateXlibSurfaceKHR :: proc(
         instance : vk.Instance,
         pCreateInfo : ^XlibSurfaceCreateInfoKHR,
         pAllocator : ^vk.AllocationCallbacks,
@@ -35,7 +35,7 @@ foreign vulkan_xlib {
     ) -> vk.Result ---;
 
     @(link_name="vkGetPhysicalDeviceXlibPresentationSupportKHR")
-    get_physical_device_xlib_presentation_support_khr :: proc(
+    GetPhysicalDeviceXlibPresentationSupportKHR :: proc(
         physicalDevice : vk.PhysicalDevice,
         queueFamilyIndex : u32,
         dpy : ^xlib.Display,

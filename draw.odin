@@ -9,6 +9,7 @@ import sdl "vendor:sdl2"
 import img "vendor:sdl2/image"
 import vk "vendor:vulkan"
 import vkx11 "x11/vulkan"
+import xlib "x11/xlib"
 import lin "core:math/linalg/glsl"
 import time "core:time"
 
@@ -389,7 +390,7 @@ find_queue_families :: proc(vkc: ^VulkanContext) -> bool {
 		}
 
 		presentSupport := b32(false)
-		vk.GetPhysicalDeviceSurfaceSupportKhr(vkc.physicalDevice, u32(i), vkc.surface, &presentSupport)
+		vk.GetPhysicalDeviceSurfaceSupportKHR(vkc.physicalDevice, u32(i), vkc.surface, &presentSupport)
 		if presentSupport {
 			vkc.presentFamily = u32(i)
 			remaining -= 1
@@ -454,16 +455,16 @@ create_surface :: proc(vkc: ^VulkanContext, sdlWindow: ^sdl.Window) -> bool {
 	surface: vk.SurfaceKHR
 	createInfo : vkx11.XlibSurfaceCreateInfoKHR
 	createInfo.sType = vk.StructureType.XLIB_SURFACE_CREATE_INFO_KHR
-	info : sdl.Sys_Wm_Info
-	sdl.get_version(&info.version)
-	if sdl.get_window_wm_info(sdlWindow, &info) == sdl.Bool.False {
+	info : sdl.SysWMinfo
+	sdl.GetVersion(&info.version)
+	if sdl.GetWindowWMInfo(sdlWindow, &info) == false {
 		fmt.println("Could not get window info.")
 		return false
 	}
 	fmt.println("WOOT!  Got Window info: ", info)
-	createInfo.dpy = info.info.x11.display
-	createInfo.window = info.info.x11.window
-	result := vk.CreateXlibSurfaceKhr(vkc.instance, &createInfo, nil, &surface)
+	createInfo.dpy = (^xlib.Display)(info.info.x11.display)
+	createInfo.window = xlib.Window(info.info.x11.window)
+	result := vkx11.CreateXlibSurfaceKHR(vkc.instance, &createInfo, nil, &surface)
 	if result != vk.Result.SUCCESS {
 		fmt.println("Failed to create surface: ", result)
 		return false
@@ -498,35 +499,35 @@ check_device_extension_support :: proc(vkc: ^VulkanContext) -> bool {
 query_swap_chain_support :: proc(vkc: ^VulkanContext) -> bool {
 	fmt.println("get_physical_device_surface_capabilities_khr")
 	fmt.printf("vkc.physicalDevice: %v\n", vkc.physicalDevice)
-	if vk.GetPhysicalDeviceSurfaceCapabilitiesKhr(vkc.physicalDevice, vkc.surface, &vkc.capabilities) != vk.Result.SUCCESS {
+	if vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.physicalDevice, vkc.surface, &vkc.capabilities) != vk.Result.SUCCESS {
 		return false
 	}
 
 	formatCount:u32
 	fmt.println("get_physical_device_surface_formats_khr")
-	vk.GetPhysicalDeviceSurfaceFormatsKhr(vkc.physicalDevice, vkc.surface, &formatCount, nil)
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.physicalDevice, vkc.surface, &formatCount, nil)
 	if formatCount == 0 {
 		return false
 	}
 	vkc.formats = make([]vk.SurfaceFormatKHR,formatCount)
 	fmt.println("get_physical_device_surface_formats_khr")
-	vk.GetPhysicalDeviceSurfaceFormatsKhr(vkc.physicalDevice, vkc.surface, &formatCount, mem.raw_slice_data(vkc.formats))
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.physicalDevice, vkc.surface, &formatCount, mem.raw_slice_data(vkc.formats))
 
 	presentModeCount:u32
 	fmt.println("get_physical_device_surface_present_modes_khr")
-	vk.GetPhysicalDeviceSurfacePresentModesKhr(vkc.physicalDevice, vkc.surface, &presentModeCount, nil)
+	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.physicalDevice, vkc.surface, &presentModeCount, nil)
 	if presentModeCount == 0 {
 		return false
 	}
 	vkc.presentModes = make([]vk.PresentModeKHR,presentModeCount)
 	fmt.println("get_physical_device_surface_present_modes_khr")
-	vk.GetPhysicalDeviceSurfacePresentModesKhr(vkc.physicalDevice, vkc.surface, &presentModeCount, mem.raw_slice_data(vkc.presentModes))
+	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.physicalDevice, vkc.surface, &presentModeCount, mem.raw_slice_data(vkc.presentModes))
 	return true
 }
 
 choose_swap_surface_format :: proc(availableFormats: []vk.SurfaceFormatKHR) -> vk.SurfaceFormatKHR {
 	for af, _ in availableFormats {
-		if af.format == vk.Format.B8G8R8A8Srgb && af.colorSpace == vk.ColorSpaceKHR.ColorspaceSrgbNonlinear {
+		if af.format == vk.Format.B8G8R8A8_SRGB && af.colorSpace == vk.ColorSpaceKHR.SRGB_NONLINEAR {
 			return af
 		}
 	}
@@ -536,12 +537,12 @@ choose_swap_surface_format :: proc(availableFormats: []vk.SurfaceFormatKHR) -> v
 
 choose_swap_present_mode :: proc(availablePresentModes: []vk.PresentModeKHR) -> vk.PresentModeKHR {
 	for apm, _ in availablePresentModes {
-		if apm == vk.PresentModeKHR.Mailbox {
+		if apm == vk.PresentModeKHR.MAILBOX {
 			return apm
 		}
 	}
 
-	return vk.PresentModeKHR.Fifo
+	return vk.PresentModeKHR.FIFO
 }
 
 choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR, window:^sdl.Window, width, height: u32) -> vk.Extent2D {
@@ -578,7 +579,7 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	createInfo.imageColorSpace = surfaceFormat.colorSpace
 	createInfo.imageExtent = extent
 	createInfo.imageArrayLayers = 1
-	createInfo.imageUsage = u32(vk.ImageUsageFlagBits.ColorAttachment)
+	createInfo.imageUsage = vk.ImageUsageFlags{.COLOR_ATTACHMENT}
 
 	ok := find_queue_families(vkc)
 	if !ok {
@@ -595,19 +596,19 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	}
 
 	createInfo.preTransform = vkc.capabilities.currentTransform
-	createInfo.compositeAlpha = vk.CompositeAlphaFlagBitsKHR.Opaque
+	createInfo.compositeAlpha = vk.CompositeAlphaFlagsKHR{.OPAQUE}
 	createInfo.presentMode = presentMode
-	createInfo.clipped = vk.TRUE
+	createInfo.clipped = true
 
-	createInfo.oldSwapchain = nil
+	createInfo.oldSwapchain = 0
 
-	if vk.CreateSwapchainKhr(vkc.device, &createInfo, nil, &vkc.swapChain) != vk.Result.SUCCESS {
+	if vk.CreateSwapchainKHR(vkc.device, &createInfo, nil, &vkc.swapChain) != vk.Result.SUCCESS {
 		return false
 	}
 
-	vk.GetSwapchainImagesKhr(vkc.device, vkc.swapChain, &imageCount, nil)
+	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapChain, &imageCount, nil)
 	vkc.swapChainImages = make([]vk.Image,imageCount)
-	vk.GetSwapchainImagesKhr(vkc.device, vkc.swapChain, &imageCount, mem.raw_slice_data(vkc.swapChainImages))
+	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapChain, &imageCount, mem.raw_slice_data(vkc.swapChainImages))
 
 	vkc.swapChainImageFormat = surfaceFormat.format
 	vkc.swapChainExtent = extent
@@ -643,14 +644,14 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	vertShaderStageInfo := vk.PipelineShaderStageCreateInfo{
 		sType = vk.StructureType.PIPELINE_SHADER_STAGE_CREATE_INFO,
-		stage = vk.ShaderStageFlagBits.Vertex,
+		stage = vk.ShaderStageFlags{.VERTEX},
 		module = vertShaderModule,
 		pName = "main",
 	}
 
 	fragShaderStageInfo := vk.PipelineShaderStageCreateInfo{
 		sType = vk.StructureType.PIPELINE_SHADER_STAGE_CREATE_INFO,
-		stage = vk.ShaderStageFlagBits.Fragment,
+		stage = vk.ShaderStageFlags{.FRAGMENT},
 		module = fragShaderModule,
 		pName = "main",
 	}
@@ -671,8 +672,8 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	inputAssembly := vk.PipelineInputAssemblyStateCreateInfo{
 		sType = vk.StructureType.PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		topology = vk.PrimitiveTopology.TriangleList,
-		primitiveRestartEnable = vk.FALSE,
+		topology = vk.PrimitiveTopology.TRIANGLE_LIST,
+		primitiveRestartEnable = false,
 	}
 
 	viewport := vk.Viewport{
@@ -697,27 +698,27 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	rasterizer := vk.PipelineRasterizationStateCreateInfo{}
 	rasterizer.sType = vk.StructureType.PIPELINE_RASTERIZATION_STATE_CREATE_INFO
-	rasterizer.depthClampEnable = vk.FALSE
-	rasterizer.rasterizerDiscardEnable = vk.FALSE
-	rasterizer.polygonMode = vk.PolygonMode.Fill
+	rasterizer.depthClampEnable = false
+	rasterizer.rasterizerDiscardEnable = false
+	rasterizer.polygonMode = vk.PolygonMode.FILL
 	rasterizer.lineWidth = 1.0
-	rasterizer.cullMode = u32(vk.CullModeFlagBits.Back)
-	rasterizer.frontFace = vk.FrontFace.CounterClockwise
-	rasterizer.depthBiasEnable = vk.FALSE
+	rasterizer.cullMode = vk.CullModeFlags{.BACK}
+	rasterizer.frontFace = vk.FrontFace.COUNTER_CLOCKWISE
+	rasterizer.depthBiasEnable = false
 
 	multisampling := vk.PipelineMultisampleStateCreateInfo{}
 	multisampling.sType = vk.StructureType.PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
-	multisampling.sampleShadingEnable = vk.FALSE
-	multisampling.rasterizationSamples = vk.SampleCountFlagBits._1
+	multisampling.sampleShadingEnable = false
+	multisampling.rasterizationSamples = vk.SampleCountFlags{._1}
 
 	colorBlendAttachment := vk.PipelineColorBlendAttachmentState{}
-	colorBlendAttachment.colorWriteMask = u32(vk.ColorComponentFlagBits.R | vk.ColorComponentFlagBits.G | vk.ColorComponentFlagBits.B | vk.ColorComponentFlagBits.A)
-	colorBlendAttachment.blendEnable = vk.FALSE
+	colorBlendAttachment.colorWriteMask = vk.ColorComponentFlags{.R,.G,.B,.A}
+	colorBlendAttachment.blendEnable = false
 
 	colorBlending := vk.PipelineColorBlendStateCreateInfo{}
 	colorBlending.sType = vk.StructureType.PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
-	colorBlending.logicOpEnable = vk.FALSE
-	colorBlending.logicOp = vk.LogicOp.Copy
+	colorBlending.logicOpEnable = false
+	colorBlending.logicOp = vk.LogicOp.COPY
 	colorBlending.attachmentCount = 1
 	colorBlending.pAttachments = &colorBlendAttachment
 	colorBlending.blendConstants[0] = 0.0
@@ -748,9 +749,9 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 	pipelineInfo.layout = vkc.pipelineLayout
 	pipelineInfo.renderPass = vkc.renderPass
 	pipelineInfo.subpass = 0
-	pipelineInfo.basePipelineHandle = nil
+	pipelineInfo.basePipelineHandle = 0
 
-	if vk.CreateGraphicsPipelines(vkc.device, nil, 1, &pipelineInfo, nil, &vkc.graphicsPipeline) != vk.Result.SUCCESS {
+	if vk.CreateGraphicsPipelines(vkc.device, 0, 1, &pipelineInfo, nil, &vkc.graphicsPipeline) != vk.Result.SUCCESS {
 		return false
 	}
 
@@ -781,28 +782,28 @@ cleanup :: proc(vkc: ^VulkanContext) {
 
 	vk.DestroyDevice(vkc.device, nil)
 
-	vk.DestroySurfaceKhr(vkc.instance, vkc.surface, nil)
+	vk.DestroySurfaceKHR(vkc.instance, vkc.surface, nil)
 	vk.DestroyInstance(vkc.instance, nil)
 }
 
 create_render_pass :: proc(vkc: ^VulkanContext) -> bool {
 	colorAttachment := vk.AttachmentDescription{
 		format = vkc.swapChainImageFormat,
-		samples = vk.SampleCountFlagBits._1,
-		loadOp = vk.AttachmentLoadOp.Clear,
-		storeOp = vk.AttachmentStoreOp.Store,
-		stencilLoadOp = vk.AttachmentLoadOp.DontCare,
-		stencilStoreOp = vk.AttachmentStoreOp.DontCare,
-		initialLayout = vk.ImageLayout.Undefined,
-		finalLayout = vk.ImageLayout.PresentSrcKhr,
+		samples = vk.SampleCountFlags{._1},
+		loadOp = vk.AttachmentLoadOp.CLEAR,
+		storeOp = vk.AttachmentStoreOp.STORE,
+		stencilLoadOp = vk.AttachmentLoadOp.DONT_CARE,
+		stencilStoreOp = vk.AttachmentStoreOp.DONT_CARE,
+		initialLayout = vk.ImageLayout.UNDEFINED,
+		finalLayout = vk.ImageLayout.PRESENT_SRC_KHR,
 	}
 
 	colorAttachmentRef := vk.AttachmentReference{}
 	colorAttachmentRef.attachment = 0
-	colorAttachmentRef.layout = vk.ImageLayout.ColorAttachmentOptimal
+	colorAttachmentRef.layout = vk.ImageLayout.COLOR_ATTACHMENT_OPTIMAL
 
 	subpass := vk.SubpassDescription{}
-	subpass.pipelineBindPoint = vk.PipelineBindPoint.Graphics
+	subpass.pipelineBindPoint = vk.PipelineBindPoint.GRAPHICS
 	subpass.colorAttachmentCount = 1
 	subpass.pColorAttachments = &colorAttachmentRef
 
@@ -822,12 +823,12 @@ create_render_pass :: proc(vkc: ^VulkanContext) -> bool {
 create_shader_module :: proc(vkc: ^VulkanContext, code: []byte) -> (vk.ShaderModule, bool) {
 	createInfo := vk.ShaderModuleCreateInfo{}
 	createInfo.sType = vk.StructureType.SHADER_MODULE_CREATE_INFO
-	createInfo.codeSize = uint(len(code))
+	createInfo.codeSize = len(code)
 	createInfo.pCode = transmute(^u32)mem.raw_slice_data(code)
 
 	shaderModule: vk.ShaderModule
 	if vk.CreateShaderModule(vkc.device, &createInfo, nil, &shaderModule) != vk.Result.SUCCESS {
-		return nil, false
+		return 0, false
 	}
 
 	return shaderModule, true
@@ -909,7 +910,7 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 	allocInfo := vk.CommandBufferAllocateInfo{
 		sType = vk.StructureType.COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool = vkc.commandPool,
-		level = vk.CommandBufferLevel.Primary,
+		level = vk.CommandBufferLevel.PRIMARY,
 		commandBufferCount = u32(len(vkc.commandBuffers)),
 	}
 
@@ -940,15 +941,15 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 		renderPassInfo.clearValueCount = 1
 		renderPassInfo.pClearValues = &clearColor
 
-		vk.CmdBeginRenderPass(cb, &renderPassInfo, vk.SubpassContents.Inline)
+		vk.CmdBeginRenderPass(cb, &renderPassInfo, vk.SubpassContents.INLINE)
 
-		vk.CmdBindPipeline(cb, vk.PipelineBindPoint.Graphics, vkc.graphicsPipeline)
+		vk.CmdBindPipeline(cb, vk.PipelineBindPoint.GRAPHICS, vkc.graphicsPipeline)
 
 		vertexBuffers := []vk.Buffer{vkc.vertexBuffer}
 		offsets := []vk.DeviceSize{0}
 		vk.CmdBindVertexBuffers(vkc.commandBuffers[i], 0, 1, mem.raw_slice_data(vertexBuffers), mem.raw_slice_data(offsets))
-		vk.CmdBindIndexBuffer(vkc.commandBuffers[i],vkc.indexBuffer,0,vk.IndexType.Uint16)
-		vk.CmdBindDescriptorSets(vkc.commandBuffers[i], vk.PipelineBindPoint.Graphics, vkc.pipelineLayout, 0, 1, &vkc.descriptorSets[i], 0, nil)
+		vk.CmdBindIndexBuffer(vkc.commandBuffers[i],vkc.indexBuffer,0,vk.IndexType.UINT16)
+		vk.CmdBindDescriptorSets(vkc.commandBuffers[i], vk.PipelineBindPoint.GRAPHICS, vkc.pipelineLayout, 0, 1, &vkc.descriptorSets[i], 0, nil)
 		vk.CmdDrawIndexed(vkc.commandBuffers[i], u32(len(indices)), 1, 0, 0, 0)
 
 		// vk.CmdDraw(cb, 3, 1, 0, 0)
@@ -966,17 +967,17 @@ create_descriptor_layout :: proc(vkc: ^VulkanContext) -> bool {
 	uboLayoutBinding := vk.DescriptorSetLayoutBinding{
 		binding = 0,
 		descriptorCount = 1,
-		descriptorType = vk.DescriptorType.UniformBuffer,
+		descriptorType = vk.DescriptorType.UNIFORM_BUFFER,
 		pImmutableSamplers = nil,
-		stageFlags = u32(vk.ShaderStageFlagBits.Vertex),
+		stageFlags = vk.ShaderStageFlags{.VERTEX},
 	}
 
 	samplerLayoutBinding := vk.DescriptorSetLayoutBinding {
 		binding = 1,
 		descriptorCount = 1,
-		descriptorType = vk.DescriptorType.CombinedImageSampler,
+		descriptorType = vk.DescriptorType.COMBINED_IMAGE_SAMPLER,
 		pImmutableSamplers = nil,
-		stageFlags = u32(vk.ShaderStageFlagBits.Fragment),
+		stageFlags = vk.ShaderStageFlags{.FRAGMENT},
 	}
 
 	bindings := []vk.DescriptorSetLayoutBinding{uboLayoutBinding, samplerLayoutBinding}
@@ -1000,7 +1001,7 @@ create_uniform_buffers :: proc(vkc: ^VulkanContext) -> bool {
 	vkc.uniformBuffersMemory = make([]vk.DeviceMemory,len(vkc.swapChainImages))
 
 	for _, i in vkc.swapChainImages {
-		create_buffer(vkc, bufferSize, vk.BufferUsageFlagBits.UniformBuffer, vk.MemoryPropertyFlagBits{HOST_VISIBLE} | vk.MemoryPropertyFlagBits{HOST_COHERENT}, &vkc.uniformBuffers[i], &vkc.uniformBuffersMemory[i])
+		create_buffer(vkc, bufferSize, vk.BufferUsageFlags{.UNIFORM_BUFFER}, vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}, &vkc.uniformBuffers[i], &vkc.uniformBuffersMemory[i])
 	}
 	return true
 }
@@ -1009,11 +1010,11 @@ create_uniform_buffers :: proc(vkc: ^VulkanContext) -> bool {
 create_descriptor_pool :: proc(vkc: ^VulkanContext) -> bool {
 	poolSize := []vk.DescriptorPoolSize {
 		{
-			type = vk.DescriptorType.UniformBuffer,
+			type = vk.DescriptorType.UNIFORM_BUFFER,
 			descriptorCount = u32(len(vkc.swapChainImages)),
 		},
 		{
-			type = vk.DescriptorType.CombinedImageSampler,
+			type = vk.DescriptorType.COMBINED_IMAGE_SAMPLER,
 			descriptorCount = u32(len(vkc.swapChainImages)),
 		},
 	}
@@ -1058,7 +1059,7 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 		}
 
 		imageInfo := vk.DescriptorImageInfo {
-			imageLayout = vk.ImageLayout.ShaderReadOnlyOptimal,
+			imageLayout = vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL,
 			imageView = vkc.textureImageView,
 			sampler = vkc.textureSampler,
 		}
@@ -1069,7 +1070,7 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 				dstSet = vkc.descriptorSets[i],
 				dstBinding = 0,
 				dstArrayElement = 0,
-				descriptorType = vk.DescriptorType.UniformBuffer,
+				descriptorType = vk.DescriptorType.UNIFORM_BUFFER,
 				descriptorCount = 1,
 				pBufferInfo = &bufferInfo,
 			},
@@ -1078,7 +1079,7 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 				dstSet = vkc.descriptorSets[i],
 				dstBinding = 1,
 				dstArrayElement = 0,
-				descriptorType = vk.DescriptorType.CombinedImageSampler,
+				descriptorType = vk.DescriptorType.COMBINED_IMAGE_SAMPLER,
 				descriptorCount = 1,
 				pImageInfo = &imageInfo,
 			},
@@ -1089,27 +1090,16 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 	return true
 }
 
-sdl_pixeltype_packed32 :: 6
-sdl_packedorder_rgba :: 4
-sdl_packedlayout_8888 :: 6
-
-// SDL_DEFINE_PIXELFORMAT(SDL_PIXELTYPE_PACKED32, SDL_PACKEDORDER_RGBA,
-//                                SDL_PACKEDLAYOUT_8888, 32, 4),
-
-sdl_define_pixelformat :: proc(type, order , layout, bits, bytes: u32) -> u32 {
-	return ((1 << 28) | ((type) << 24) | ((order) << 20) | ((layout) << 16) | ((bits) << 8) | ((bytes) << 0))
-}
-
-sdl_pixelformat_rgba8888 := sdl_define_pixelformat(sdl_pixeltype_packed32, sdl_packedorder_rgba, sdl_packedlayout_8888, 32, 4)
+sdl_pixelformat_rgba8888 := sdl.DEFINE_PIXELFORMAT(sdl.PIXELTYPE_PACKED32, sdl.PACKEDORDER_RGBA, sdl.PACKEDLAYOUT_8888, 32, 4)
 
 create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format) -> (vk.ImageView, bool) {
  viewInfo := vk.ImageViewCreateInfo {
 		sType = vk.StructureType.IMAGE_VIEW_CREATE_INFO,
 		image = image,
-		viewType = vk.ImageViewType._2D,
+		viewType = vk.ImageViewType.D2,
 		format = format,
 		subresourceRange = {
-			aspectMask = u32(vk.ImageAspectFlagBits.Color),
+			aspectMask = vk.ImageAspectFlags{.COLOR},
 			baseMipLevel = 0,
 			levelCount = 1,
 			baseArrayLayer = 0,
@@ -1123,7 +1113,7 @@ create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Forma
 		return imageView, true
 	}
 
-	return nil, false
+	return 0, false
 }
 
 create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
@@ -1132,18 +1122,18 @@ create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
 
 		samplerInfo := vk.SamplerCreateInfo{
 			sType = vk.StructureType.SAMPLER_CREATE_INFO,
-			magFilter = vk.Filter.Linear,
-			minFilter = vk.Filter.Linear,
-			addressModeU = vk.SamplerAddressMode.Repeat,
-			addressModeV = vk.SamplerAddressMode.Repeat,
-			addressModeW = vk.SamplerAddressMode.Repeat,
-			anisotropyEnable = vk.TRUE,
+			magFilter = vk.Filter.LINEAR,
+			minFilter = vk.Filter.LINEAR,
+			addressModeU = vk.SamplerAddressMode.REPEAT,
+			addressModeV = vk.SamplerAddressMode.REPEAT,
+			addressModeW = vk.SamplerAddressMode.REPEAT,
+			anisotropyEnable = true,
 			maxAnisotropy = properties.limits.maxSamplerAnisotropy,
-			borderColor = vk.BorderColor.IntOpaqueBlack,
-			unnormalizedCoordinates = vk.FALSE,
-			compareEnable = vk.FALSE,
-			compareOp = vk.CompareOp.Always,
-			mipmapMode = vk.SamplerMipmapMode.Linear,
+			borderColor = vk.BorderColor.INT_OPAQUE_BLACK,
+			unnormalizedCoordinates = false,
+			compareEnable = false,
+			compareOp = vk.CompareOp.ALWAYS,
+			mipmapMode = vk.SamplerMipmapMode.LINEAR,
 			mipLodBias = 0.0,
 			minLod = 0.0,
 			maxLod = 0.0,
@@ -1157,35 +1147,35 @@ create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_texture_image_view :: proc(vkc: ^VulkanContext) -> bool {
-	textureImageView, result := create_image_view(vkc, vkc.textureImage, vk.Format.R8G8B8A8Srgb)
+	textureImageView, result := create_image_view(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB)
 	vkc.textureImageView = textureImageView
 	return result
 }
 
 render_image :: proc(surface: ^sdl.Surface) {
-	window := sdl.create_window("SDL2 Displaying Image",
-		i32(sdl.Window_Pos.Undefined), i32(sdl.Window_Pos.Undefined), surface.w, surface.h, sdl.Window_Flags(0))
-	defer sdl.destroy_window(window)
+	window := sdl.CreateWindow("SDL2 Displaying Image",
+		sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, surface.w, surface.h, sdl.WindowFlags{})
+	defer sdl.DestroyWindow(window)
 
-	renderer := sdl.create_renderer(window, -1, sdl.Renderer_Flags(0))
-	defer sdl.destroy_renderer(renderer)
+	renderer := sdl.CreateRenderer(window, -1, sdl.RendererFlags{})
+	defer sdl.DestroyRenderer(renderer)
 
-	texture := sdl.create_texture_from_surface(renderer, surface)
-	defer sdl.destroy_texture(texture)
+	texture := sdl.CreateTextureFromSurface(renderer, surface)
+	defer sdl.DestroyTexture(texture)
 
-	sdl.render_copy(renderer, texture, nil, nil)
-	sdl.render_present(renderer)
+	sdl.RenderCopy(renderer, texture, nil, nil)
+	sdl.RenderPresent(renderer)
 
 	event: sdl.Event
 	stop:
 	for {
-		for sdl.wait_event(&event) != 0 {
+		for sdl.WaitEvent(&event) != 0 {
 			#partial switch event.type {
-			case sdl.Event_Type.Quit:
+			case sdl.EventType.QUIT:
 				break stop
-			case sdl.Event_Type.Window_Event:
+			case sdl.EventType.WINDOWEVENT:
 				#partial switch event.window.event {
-					case sdl.Window_Event_ID.Close:
+					case sdl.WindowEventID.CLOSE:
 						break stop
 					case:
 				}
@@ -1195,23 +1185,23 @@ render_image :: proc(surface: ^sdl.Surface) {
 }
 
 create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
-	origImageSurface := img.load("textures/texture.jpg")
+	origImageSurface := img.Load("textures/texture.jpg")
 	if origImageSurface == nil {
 		fmt.println("Error loading texture image")
 		return false
 	}
-	defer sdl.free_surface(origImageSurface)
+	defer sdl.FreeSurface(origImageSurface)
 	texWidth := origImageSurface.w
 	texHeight := origImageSurface.h
-	targetSurface := sdl.create_rgb_surface_with_format(0, origImageSurface.w, origImageSurface.h, 32, sdl_pixelformat_rgba8888)
-	defer sdl.free_surface(targetSurface)
+	targetSurface := sdl.CreateRGBSurfaceWithFormat(0, origImageSurface.w, origImageSurface.h, 32, sdl_pixelformat_rgba8888)
+	defer sdl.FreeSurface(targetSurface)
 	rect := sdl.Rect {
 		x = 0,
 		y = 0,
 		w = origImageSurface.w,
 		h = origImageSurface.h,
 	}
-	err := sdl.upper_blit(origImageSurface,&rect,targetSurface,&rect)
+	err := sdl.UpperBlit(origImageSurface,&rect,targetSurface,&rect)
 	if err != 0 {
 		fmt.printf("Error blitting texture image to target surface: %d\n", err)
 		return false
@@ -1221,29 +1211,29 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 	stagingBuffer : vk.Buffer
 	stagingBufferMemory : vk.DeviceMemory
 
-	if !create_buffer(vkc, imageSize, vk.BufferUsageFlagBits.TransferSrc, vk.MemoryPropertyFlagBits{HOST_VISIBLE} | vk.MemoryPropertyFlagBits{HOST_COHERENT}, &stagingBuffer, &stagingBufferMemory) {
+	if !create_buffer(vkc, imageSize, vk.BufferUsageFlags{.TRANSFER_SRC}, vk.MemoryPropertyFlags{.HOST_VISIBLE,.HOST_COHERENT}, &stagingBuffer, &stagingBufferMemory) {
 		return false
 	}
 	defer vk.DestroyBuffer(vkc.device, stagingBuffer, nil)
 	defer vk.FreeMemory(vkc.device, stagingBufferMemory, nil)
 
 	data: rawptr
-	vk.MapMemory(vkc.device, stagingBufferMemory, 0, imageSize, 0, &data)
-	sdl.lock_surface(targetSurface)
+	vk.MapMemory(vkc.device, stagingBufferMemory, 0, imageSize, vk.MemoryMapFlags{}, &data)
+	sdl.LockSurface(targetSurface)
 	rt.mem_copy_non_overlapping(data, targetSurface.pixels, int(imageSize))
-	sdl.unlock_surface(targetSurface)
+	sdl.UnlockSurface(targetSurface)
 	vk.UnmapMemory(vkc.device, stagingBufferMemory)
 
-	if !create_image(vkc, u32(texWidth), u32(texHeight), vk.Format.R8G8B8A8Srgb,vk.ImageTiling.Optimal, vk.ImageUsageFlagBits.TransferDst | vk.ImageUsageFlagBits.Sampled, vk.MemoryPropertyFlagBits{DEVICE_LOCAL}, &vkc.textureImage, &vkc.textureImageMemory) {
+	if !create_image(vkc, u32(texWidth), u32(texHeight), vk.Format.R8G8B8A8_SRGB,vk.ImageTiling.OPTIMAL, vk.ImageUsageFlags{.TRANSFER_DST, .SAMPLED}, vk.MemoryPropertyFlags{.DEVICE_LOCAL}, &vkc.textureImage, &vkc.textureImageMemory) {
 		fmt.println("Error: could not create image")
 		return false
 	}
 
-	if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8Srgb, vk.ImageLayout.Undefined, vk.ImageLayout.TransferDstOptimal) {
+	if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB, vk.ImageLayout.UNDEFINED, vk.ImageLayout.TRANSFER_DST_OPTIMAL) {
 		return false
 	}
 	copy_buffer_to_image(vkc, stagingBuffer, vkc.textureImage, u32(texWidth), u32(texHeight))
-	if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8Srgb, vk.ImageLayout.TransferDstOptimal, vk.ImageLayout.ShaderReadOnlyOptimal) {
+	if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB, vk.ImageLayout.TRANSFER_DST_OPTIMAL, vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL) {
 		return false
 	}
 
@@ -1258,7 +1248,7 @@ copy_buffer_to_image :: proc(vkc: ^VulkanContext, buffer: vk.Buffer, image: vk.I
 		bufferRowLength = 0,
 		bufferImageHeight = 0,
 		imageSubresource = {
-			aspectMask =u32(vk.ImageAspectFlagBits.Color),
+			aspectMask = vk.ImageAspectFlags{.COLOR},
 			mipLevel = 0,
 			baseArrayLayer = 0,
 			layerCount = 1,
@@ -1267,7 +1257,7 @@ copy_buffer_to_image :: proc(vkc: ^VulkanContext, buffer: vk.Buffer, image: vk.I
 		imageExtent = {width, height, 1},
 	}
 
-	vk.CmdCopyBufferToImage(commandBuffer, buffer, image, vk.ImageLayout.TransferDstOptimal, 1, &region)
+	vk.CmdCopyBufferToImage(commandBuffer, buffer, image, vk.ImageLayout.TRANSFER_DST_OPTIMAL, 1, &region)
 
 	end_single_time_commands(vkc, &commandBuffer)
 }
@@ -1275,7 +1265,7 @@ copy_buffer_to_image :: proc(vkc: ^VulkanContext, buffer: vk.Buffer, image: vk.I
 begin_single_time_commands :: proc(vkc: ^VulkanContext) -> vk.CommandBuffer {
 	allocInfo := vk.CommandBufferAllocateInfo{
 		sType = vk.StructureType.COMMAND_BUFFER_ALLOCATE_INFO,
-		level = vk.CommandBufferLevel.Primary,
+		level = vk.CommandBufferLevel.PRIMARY,
 		commandPool = vkc.commandPool,
 		commandBufferCount = 1,
 	}
@@ -1285,7 +1275,7 @@ begin_single_time_commands :: proc(vkc: ^VulkanContext) -> vk.CommandBuffer {
 
 	beginInfo := vk.CommandBufferBeginInfo{
 		sType = vk.StructureType.COMMAND_BUFFER_BEGIN_INFO,
-		flags = u32(vk.CommandBufferUsageFlagBits.OneTimeSubmit),
+		flags = vk.CommandBufferUsageFlags{.ONE_TIME_SUBMIT},
 	}
 
 	vk.BeginCommandBuffer(commandBuffer, &beginInfo)
@@ -1302,7 +1292,7 @@ end_single_time_commands :: proc(vkc: ^VulkanContext, commandBuffer: ^vk.Command
 		pCommandBuffers = commandBuffer,
 	}
 
-	vk.QueueSubmit(vkc.graphicsQueue, 1, &submitInfo, nil)
+	vk.QueueSubmit(vkc.graphicsQueue, 1, &submitInfo, 0)
 	vk.QueueWaitIdle(vkc.graphicsQueue)
 
 	vk.FreeCommandBuffers(vkc.device, vkc.commandPool, 1, commandBuffer)
@@ -1311,17 +1301,15 @@ end_single_time_commands :: proc(vkc: ^VulkanContext, commandBuffer: ^vk.Command
 transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format, oldLayout: vk.ImageLayout, newLayout: vk.ImageLayout) -> bool {
 	commandBuffer := begin_single_time_commands(vkc)
 
-	ufi : i32 = vk.QUEUE_FAMILY_IGNORED
-
 	barrier := vk.ImageMemoryBarrier {
 		sType = vk.StructureType.IMAGE_MEMORY_BARRIER,
 		oldLayout = oldLayout,
 		newLayout = newLayout,
-		srcQueueFamilyIndex = transmute(u32)(ufi),
-		dstQueueFamilyIndex = transmute(u32)(ufi),
+		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		image = image,
 		subresourceRange = vk.ImageSubresourceRange{
-			aspectMask = u32(vk.ImageAspectFlagBits.Color),
+			aspectMask = vk.ImageAspectFlags{.COLOR},
 			baseMipLevel = 0,
 			levelCount = 1,
 			baseArrayLayer = 0,
@@ -1332,17 +1320,17 @@ transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk
 	sourceStage: vk.PipelineStageFlags
 	destinationStage: vk.PipelineStageFlags
 
-	if oldLayout == vk.ImageLayout.Undefined && newLayout == vk.ImageLayout.TransferDstOptimal {
-		barrier.srcAccessMask = 0
-		barrier.dstAccessMask = u32(vk.AccessFlagBits.TransferWrite)
-		sourceStage = u32(vk.PipelineStageFlagBits.TopOfPipe)
-		destinationStage = u32(vk.PipelineStageFlagBits.Transfer)
-	} else if oldLayout == vk.ImageLayout.TransferDstOptimal && newLayout == vk.ImageLayout.ShaderReadOnlyOptimal {
-		barrier.srcAccessMask = u32(vk.AccessFlagBits.TransferWrite)
-		barrier.dstAccessMask = u32(vk.AccessFlagBits.ShaderRead)
+	if oldLayout == vk.ImageLayout.UNDEFINED && newLayout == vk.ImageLayout.TRANSFER_DST_OPTIMAL {
+		barrier.srcAccessMask = vk.AccessFlags{}
+		barrier.dstAccessMask = vk.AccessFlags{.TRANSFER_WRITE}
+		sourceStage = vk.PipelineStageFlags{.TOP_OF_PIPE}
+		destinationStage = vk.PipelineStageFlags{.TRANSFER}
+	} else if oldLayout == vk.ImageLayout.TRANSFER_DST_OPTIMAL && newLayout == vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL {
+		barrier.srcAccessMask = vk.AccessFlags{.TRANSFER_WRITE}
+		barrier.dstAccessMask = vk.AccessFlags{.SHADER_READ}
 
-		sourceStage = u32(vk.PipelineStageFlagBits.Transfer)
-		destinationStage = u32(vk.PipelineStageFlagBits.FragmentShader)
+		sourceStage = vk.PipelineStageFlags{.TRANSFER}
+		destinationStage = vk.PipelineStageFlags{.FRAGMENT_SHADER}
 	} else {
 		fmt.println("unsupported layout transition!")
 		return false
@@ -1351,7 +1339,7 @@ transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk
 	vk.CmdPipelineBarrier(
 		commandBuffer,
 		sourceStage, destinationStage,
-		0,
+		vk.DependencyFlags{},
 		0, nil,
 		0, nil,
 		1, &barrier,
@@ -1365,7 +1353,7 @@ transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk
 create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format, tiling: vk.ImageTiling, usage: vk.ImageUsageFlags, properties: vk.MemoryPropertyFlags, image: ^vk.Image, imageMemory: ^vk.DeviceMemory) -> bool {
    imageInfo := vk.ImageCreateInfo{
 		sType = vk.StructureType.IMAGE_CREATE_INFO,
-		imageType = vk.ImageType._2D,
+		imageType = vk.ImageType.D2,
 		extent = {
 				width = width,
 				height = height,
@@ -1375,11 +1363,11 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
 		arrayLayers = 1,
 		format = format,
 		tiling = tiling,
-		initialLayout = vk.ImageLayout.Undefined,
-		usage = u32(usage),
+		initialLayout = vk.ImageLayout.UNDEFINED,
+		usage = usage,
 		sharingMode = vk.SharingMode.EXCLUSIVE,
-		samples = vk.SampleCountFlagBits._1,
-		flags = 0,
+		samples = vk.SampleCountFlags{._1},
+		flags = vk.ImageCreateFlags{},
 	}
 
 	if vk.CreateImage(vkc.device, &imageInfo, nil, image) != vk.Result.SUCCESS {
@@ -1390,7 +1378,7 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
 	memRequirements: vk.MemoryRequirements
 	vk.GetImageMemoryRequirements(vkc.device,image^,&memRequirements)
 
-	mt, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, u32(properties))
+	mt, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, properties)
 	if !ok {
 		fmt.println("Error: failed to find memory")
 		return false
@@ -1423,7 +1411,7 @@ create_sync_objects :: proc(vkc: ^VulkanContext) -> bool {
 
 	fenceInfo := vk.FenceCreateInfo{}
 	fenceInfo.sType = vk.StructureType.FENCE_CREATE_INFO
-	fenceInfo.flags = u32(vk.FenceCreateFlagBits.Signaled)
+	fenceInfo.flags = vk.FenceCreateFlags{.SIGNALED}
 
 
 	for i := 0; i < max_frames_in_flight; i += 1 {
@@ -1436,30 +1424,32 @@ create_sync_objects :: proc(vkc: ^VulkanContext) -> bool {
 	return true
 }
 
+VEC3_Z_AXIS :: lin.vec3{0, 0, 1}
+
 update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32) {
 	now := time.now()
 	diff := time.duration_seconds(time.diff(vkc.startTime,now))
 
 	ubo := UniformBufferObject {
-		model = lin.matrix4_rotate(lin.Float(diff)*lin.radians(f32(90)),lin.VECTOR3_Z_AXIS),
-		view = lin.matrix4_look_at(lin.vec3{2,2,2},lin.vec3{0,0,0},lin.VECTOR3_Z_AXIS),
-		proj = lin.matrix4_perspective(lin.radians(f32(45)),lin.Float(vkc.swapChainExtent.width)/lin.Float(vkc.swapChainExtent.height),0.1,10),
+		model = lin.mat4Rotate(VEC3_Z_AXIS, f32(diff)*lin.radians(f32(90))),
+		view = lin.mat4LookAt(lin.vec3{2,2,2},lin.vec3{0,0,0}, VEC3_Z_AXIS),
+		proj = lin.mat4Perspective(lin.radians(f32(45)),f32(vkc.swapChainExtent.width)/f32(vkc.swapChainExtent.height),0.1,10),
 	}
 
 	ubo.proj[1][1] *= -1
 
 	data: rawptr
-	vk.MapMemory(vkc.device,vkc.uniformBuffersMemory[currentImage],0,size_of(ubo),0,&data)
+	vk.MapMemory(vkc.device,vkc.uniformBuffersMemory[currentImage],0,size_of(ubo),vk.MemoryMapFlags{},&data)
 	fmt.println("size_of(ubo) = ", size_of(ubo))
 	rt.mem_copy_non_overlapping(data,&ubo,size_of(ubo))
 	vk.UnmapMemory(vkc.device,vkc.uniformBuffersMemory[currentImage])
 }
 
 draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
-	vk.WaitForFences(vkc.device, 1, &vkc.inFlightFences[vkc.currentFrame], vk.TRUE, bits.U64_MAX)
+	vk.WaitForFences(vkc.device, 1, &vkc.inFlightFences[vkc.currentFrame], true, bits.U64_MAX)
 
 	imageIndex: u32
-	#partial switch vk.AcquireNextImageKhr(vkc.device, vkc.swapChain, bits.U64_MAX, vkc.imageAvailableSemaphores[vkc.currentFrame], nil, &imageIndex) {
+	#partial switch vk.AcquireNextImageKHR(vkc.device, vkc.swapChain, bits.U64_MAX, vkc.imageAvailableSemaphores[vkc.currentFrame], 0, &imageIndex) {
 		case vk.Result.ERROR_OUT_OF_DATE_KHR:
 			return recreate_swap_chain(vkc)
 		case vk.Result.SUCCESS, vk.Result.SUBOPTIMAL_KHR:
@@ -1471,13 +1461,13 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 	fmt.println("about to call update_uniform_buffer")
 	update_uniform_buffer(vkc, imageIndex)
 
-	if vkc.imagesInFlight[imageIndex] != nil {
-		vk.WaitForFences(vkc.device, 1, &vkc.imagesInFlight[imageIndex], vk.TRUE, bits.U64_MAX)
+	if vkc.imagesInFlight[imageIndex] != 0 {
+		vk.WaitForFences(vkc.device, 1, &vkc.imagesInFlight[imageIndex], true, bits.U64_MAX)
 	}
 	vkc.imagesInFlight[imageIndex] = vkc.inFlightFences[vkc.currentFrame]
 
 	waitSemaphores := []vk.Semaphore{vkc.imageAvailableSemaphores[vkc.currentFrame]}
-	waitStages := []vk.PipelineStageFlags{u32(vk.PipelineStageFlagBits.ColorAttachmentOutput)}
+	waitStages := []vk.PipelineStageFlags{vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT}}
 	signalSemaphores := []vk.Semaphore{vkc.renderFinishedSemaphores[vkc.currentFrame]}
 
 
@@ -1508,7 +1498,7 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 		pImageIndices = &imageIndex,
 	}
 
-	result := vk.QueuePresentKhr(vkc.presentQueue, &presentInfo)
+	result := vk.QueuePresentKHR(vkc.presentQueue, &presentInfo)
 
 	if result == vk.Result.ERROR_OUT_OF_DATE_KHR || result == vk.Result.SUBOPTIMAL_KHR || vkc.framebufferResized {
 		vkc.framebufferResized = false
@@ -1546,7 +1536,7 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	delete(vkc.swapChainImageViews)
 	vkc.swapChainImageViews = nil
 
-	vk.DestroySwapchainKhr(vkc.device, vkc.swapChain, nil)
+	vk.DestroySwapchainKHR(vkc.device, vkc.swapChain, nil)
 
 	for i := 0; i < len(vkc.swapChainImages); i += 1 {
 		vk.DestroyBuffer(vkc.device, vkc.uniformBuffers[i], nil)
@@ -1616,11 +1606,11 @@ recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 
 main :: proc() {
 	vkc : VulkanContext
-	if sdl.init(sdl.Init_Flags.Everything) < 0 {
-		fmt.printf("failed to initialize sdl", sdl.get_error())
+	if sdl.Init(sdl.INIT_EVERYTHING) < 0 {
+		fmt.printf("failed to initialize sdl", sdl.GetError())
 		return
 	}
-	defer sdl.quit()
+	defer sdl.Quit()
 
 	vkc.startTime = time.now()
 	create_instance(&vkc)
@@ -1637,21 +1627,21 @@ main :: proc() {
 		return
 	}
 
-	window := sdl.create_window(
+	window := sdl.CreateWindow(
 		"hello_sdl2",
-		cast(i32)sdl.Window_Pos.Undefined, cast(i32)sdl.Window_Pos.Undefined,
+		cast(i32)sdl.WINDOWPOS_UNDEFINED, cast(i32)sdl.WINDOWPOS_UNDEFINED,
 		screen_width, screen_height,
-		sdl.Window_Flags.Shown | sdl.Window_Flags.Vulkan | sdl.Window_Flags.Resizable)
+		sdl.WindowFlags{.SHOWN, .VULKAN,.RESIZABLE})
 	if window == nil {
-		fmt.printf("could not create window: {}\n", sdl.get_error())
+		fmt.printf("could not create window: {}\n", sdl.GetError())
 		return
 	}
 	vkc.window = window
 	width, height: i32
-	sdl.get_window_size(vkc.window,&width,&height)
+	sdl.GetWindowSize(vkc.window,&width,&height)
 	vkc.width = u32(width)
 	vkc.height = u32(height)
-	defer sdl.destroy_window(window)
+	defer sdl.DestroyWindow(window)
 
 	fmt.println("create_surface(&vkc, window);")
 	ok = create_surface(&vkc, window)
@@ -1774,43 +1764,43 @@ main :: proc() {
 		fmt.println("Could not draw frame")
 		return
 	}
-	sdl.update_window_surface(window)
+	sdl.UpdateWindowSurface(window)
 
 	event: sdl.Event
 	stop:
 	for {
-		for sdl.poll_event(&event) != 0 {
+		for sdl.PollEvent(&event) != 0 {
 			#partial switch event.type {
-			case sdl.Event_Type.Quit:
+			case sdl.EventType.QUIT:
 				break stop
-			case sdl.Event_Type.Window_Event:
+			case sdl.EventType.WINDOWEVENT:
 				#partial switch event.window.event {
-				case sdl.Window_Event_ID.Resized:
+				case sdl.WindowEventID.RESIZED:
 					fmt.println("RESIZED!!")
 					vkc.framebufferResized = true
 					fmt.printf("new size: %d %d\n",event.window.data1,event.window.data2)
 					vkc.width = u32(event.window.data1)
 					vkc.height = u32(event.window.data2)
-					// sdl.set_window_size(vkc.window,event.window.data1,event.window.data2)
+					// sdl.SetWindowSize(vkc.window,event.window.data1,event.window.data2)
 					if !draw_frame(&vkc, window) {
 						fmt.println("Could not draw frame")
 						return
 					}
-					sdl.update_window_surface(window)
-				case sdl.Window_Event_ID.Exposed:
+					sdl.UpdateWindowSurface(window)
+				case sdl.WindowEventID.EXPOSED:
 					fmt.println("EXPOSED!!")
 					if !draw_frame(&vkc, window) {
 						fmt.println("Could not draw frame")
 						return
 					}
-					sdl.update_window_surface(window)
-				case sdl.Window_Event_ID.Shown:
+					sdl.UpdateWindowSurface(window)
+				case sdl.WindowEventID.SHOWN:
 					fmt.println("SHOWN!!")
 					if !draw_frame(&vkc, window) {
 						fmt.println("Could not draw frame")
 						return
 					}
-					sdl.update_window_surface(window)
+					sdl.UpdateWindowSurface(window)
 				}
 			case:
 				// fmt.printf("event.type: %d\n",event.type)
@@ -1820,27 +1810,27 @@ main :: proc() {
 			//     fmt.println("Could not draw frame")
 			//     return
 			// }
-			// sdl.update_window_surface(window)
+			// sdl.UpdateWindowSurface(window)
 		}
-		// sdl.update_window_surface(window)
+		// sdl.UpdateWindowSurface(window)
 	}
 
 
-	// file := sdl.rw_from_file("Tree.jpg", "r")
+	// file := sdl.RwFromFile("Tree.jpg", "r")
 	// if file == nil {
-	//     fmt.printf("could not create reference to Tree.jpg: {}\n", sdl.get_error())
+	//     fmt.printf("could not create reference to Tree.jpg: {}\n", sdl.GetError())
 	//     return
 	// }
-	// defer sdl.free_rw(file)
+	// defer sdl.FreeRw(file)
 	// image := img.load_jpg_rw(file)
 	// if image == nil {
-	//     fmt.printf("could not load image: {}\n", sdl.get_error())
+	//     fmt.printf("could not load image: {}\n", sdl.GetError())
 	//     return
 	// }
-	// defer sdl.free_surface(image)
-	// screenSurface := sdl.get_window_surface(window)
-	// sdl.upper_blit_scaled( image, nil, screenSurface, nil)
-	// // sdl.fill_rect(screenSurface, nil, sdl.map_rgb(screenSurface.format, 0xFF, 0xFF, 0xFF))
-	// sdl.update_window_surface(window)
+	// defer sdl.FreeSurface(image)
+	// screenSurface := sdl.GetWindowSurface(window)
+	// sdl.UpperBlitScaled( image, nil, screenSurface, nil)
+	// // sdl.FillRect(screenSurface, nil, sdl.MapRgb(screenSurface.format, 0xFF, 0xFF, 0xFF))
+	// sdl.UpdateWindowSurface(window)
 
 }
