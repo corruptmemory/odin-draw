@@ -619,13 +619,13 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
-	vertShaderCode, ok := read_file("shaders/vert.spv")
+	vertShaderCode, ok := read_file("shaders/shader-vert.spv")
 	if !ok {
 		return false
 	}
 	defer delete(vertShaderCode)
 	fragShaderCode: []byte
-	fragShaderCode, ok = read_file("shaders/frag.spv")
+	fragShaderCode, ok = read_file("shaders/shader-frag.spv")
 	defer delete(fragShaderCode)
 	if !ok {
 		return false
@@ -1631,6 +1631,7 @@ main :: proc() {
 	vk.load_proc_addresses(load_vulkan_proc)
 
 	vkc.startTime = time.now()
+	vkc.enableValidationLayers = true
 	create_instance(&vkc)
 	loader_instance = vkc.instance
 
