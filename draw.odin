@@ -79,6 +79,8 @@ Vertex :: struct {
 	texCoord: lin.vec2,
 }
 
+vuklan_proc_address_loader: vk.ProcGetInstanceProcAddr
+
 vertices :: []Vertex {
 	{{-0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
 	{{0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
@@ -1604,6 +1606,13 @@ recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	return true
 }
 
+loader_instance : vk.Instance = nil
+
+load_vulkan_proc :: proc(p: rawptr, name: cstring) {
+	ptr := vuklan_proc_address_loader(loader_instance, name)
+	(^vk.ProcVoidFunction)(p)^ = ptr
+}
+
 main :: proc() {
 	vkc : VulkanContext
 	if sdl.Init(sdl.INIT_EVERYTHING) < 0 {
@@ -1611,9 +1620,21 @@ main :: proc() {
 		return
 	}
 	defer sdl.Quit()
+	if sdl.Vulkan_LoadLibrary(nil) < 0 {
+		fmt.printf("failed to load Vulkan", sdl.GetError())
+		return
+	}
+	defer sdl.Vulkan_UnloadLibrary()
+
+	vuklan_proc_address_loader = vk.ProcGetInstanceProcAddr(sdl.Vulkan_GetVkGetInstanceProcAddr())
+
+	vk.load_proc_addresses(load_vulkan_proc)
 
 	vkc.startTime = time.now()
 	create_instance(&vkc)
+	loader_instance = vkc.instance
+
+	vk.load_proc_addresses(load_vulkan_proc)
 
 	fmt.println(" pick_physical_device(&vkc);")
 	ok := pick_physical_device(&vkc)
