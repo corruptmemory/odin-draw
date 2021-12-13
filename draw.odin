@@ -555,21 +555,24 @@ choose_swap_present_mode :: proc(availablePresentModes: []vk.PresentModeKHR) -> 
 }
 
 choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR, window:^sdl.Window, width, height: u32) -> vk.Extent2D {
-	// if capabilities.currentExtent.width != bits.U32_MAX {
-	//     return capabilities.currentExtent
-	// } else {
+	if capabilities.currentExtent.width != bits.U32_MAX {
+	    return capabilities.currentExtent
+	} else {
 		actualExtent := vk.Extent2D{width, height}
 
-		// actualExtent.width = max(capabilities.minImageExtent.width, min(capabilities.maxImageExtent.width, actualExtent.width))
-		// actualExtent.height = max(capabilities.minImageExtent.height, min(capabilities.maxImageExtent.height, actualExtent.height))
+		actualExtent.width = max(capabilities.minImageExtent.width, min(capabilities.maxImageExtent.width, actualExtent.width))
+		actualExtent.height = max(capabilities.minImageExtent.height, min(capabilities.maxImageExtent.height, actualExtent.height))
 
 		return actualExtent
-	// }
+	}
 }
 
 create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	surfaceFormat := choose_swap_surface_format(vkc.formats)
 	presentMode := choose_swap_present_mode(vkc.presentModes)
+	if vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.physicalDevice, vkc.surface, &vkc.capabilities) != vk.Result.SUCCESS {
+		return false
+	}
 	extent := choose_swap_extent(&vkc.capabilities, vkc.window, vkc.width, vkc.height)
 
 	fmt.println("extent: ",extent)
@@ -770,6 +773,8 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 cleanup :: proc(vkc: ^VulkanContext) {
+	vk.DeviceWaitIdle(vkc.device)
+
 	cleanup_swap_chain(vkc)
 
 	vk.DestroySampler(vkc.device, vkc.textureSampler, nil)
@@ -1116,7 +1121,7 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 	return true
 }
 
-sdl_pixelformat_rgba8888 := sdl.DEFINE_PIXELFORMAT(sdl.PIXELTYPE_PACKED32, sdl.PACKEDORDER_RGBA, sdl.PACKEDLAYOUT_8888, 32, 4)
+sdl_pixelformat_rgba8888 := sdl.DEFINE_PIXELFORMAT(sdl.PIXELTYPE_PACKED32, sdl.PACKEDORDER_ABGR, sdl.PACKEDLAYOUT_8888, 32, 4)
 
 create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format) -> (vk.ImageView, bool) {
  viewInfo := vk.ImageViewCreateInfo {
