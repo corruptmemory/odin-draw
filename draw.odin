@@ -164,8 +164,9 @@ get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
 			offset = u32(offset_of(Vertex, texCoord)),
 		},
 	}
-
-	return attributeDescriptions
+	result := make([]vk.VertexInputAttributeDescription, len(attributeDescriptions))
+	copy(result, attributeDescriptions)
+	return result
 }
 
 find_memory_type :: proc(vkc:^VulkanContext, typeFilter:u32, properties: vk.MemoryPropertyFlags) -> (u32, bool) {
@@ -310,14 +311,15 @@ create_instance :: proc(vkc : ^VulkanContext) -> bool {
 
 
 	// Application info
-	applicationInfo : vk.ApplicationInfo
-	applicationInfo.sType = vk.StructureType.APPLICATION_INFO
-	applicationInfo.pApplicationName = "vulkan-test"
-	applicationInfo.pEngineName = "odin-binding-generator"
-	applicationInfo.apiVersion = API_VERSION_1_1
+	applicationInfo := vk.ApplicationInfo {
+		sType = vk.StructureType.APPLICATION_INFO,
+		pApplicationName = "vulkan-test",
+		pEngineName = "odin-binding-generator",
+		apiVersion = vk.API_VERSION_1_0,
+	}
 
 	// Instance info
-	instanceCreateInfo := vk.InstanceCreateInfo{
+	instanceCreateInfo := vk.InstanceCreateInfo {
 		sType = vk.StructureType.INSTANCE_CREATE_INFO,
 		pApplicationInfo = &applicationInfo,
 		enabledExtensionCount = u32(len(extensions)),
@@ -334,8 +336,7 @@ create_instance :: proc(vkc : ^VulkanContext) -> bool {
 	result := vk.CreateInstance(&instanceCreateInfo, nil, &vkc.instance)
 	if result == vk.Result.SUCCESS {
 		fmt.println("Successfully created instance!")
-	}
-	else {
+	} else {
 		fmt.println("Unable to create instance!")
 		return false
 	}
@@ -420,11 +421,12 @@ create_logical_device :: proc(vkc: ^VulkanContext) -> bool {
 
 	queuePriority : f32 = 1.0
 	for qf, i in uniqueQueueFamilies {
-		queueCreateInfo := vk.DeviceQueueCreateInfo{}
-		queueCreateInfo.sType = vk.StructureType.DEVICE_QUEUE_CREATE_INFO
-		queueCreateInfo.queueFamilyIndex = qf
-		queueCreateInfo.queueCount = 1
-		queueCreateInfo.pQueuePriorities = &queuePriority
+		queueCreateInfo := vk.DeviceQueueCreateInfo{
+			sType = vk.StructureType.DEVICE_QUEUE_CREATE_INFO,
+			queueFamilyIndex = qf,
+			queueCount = 1,
+			pQueuePriorities = &queuePriority,
+		}
 		queueCreateInfos[i] = queueCreateInfo
 	}
 
@@ -432,19 +434,24 @@ create_logical_device :: proc(vkc: ^VulkanContext) -> bool {
 		samplerAnisotropy = true,
 	}
 
-	createInfo : vk.DeviceCreateInfo
-	createInfo.sType = vk.StructureType.DEVICE_CREATE_INFO
-	createInfo.pQueueCreateInfos = mem.raw_slice_data(queueCreateInfos)
-	createInfo.queueCreateInfoCount = u32(len(queueCreateInfos))
-	createInfo.pEnabledFeatures = &deviceFeatures
-	createInfo.enabledExtensionCount = u32(len(device_extensions))
-	createInfo.ppEnabledExtensionNames = mem.raw_slice_data(device_extensions)
-	createInfo.enabledLayerCount = 0
+	createInfo := vk.DeviceCreateInfo {
+		sType = vk.StructureType.DEVICE_CREATE_INFO,
+		pQueueCreateInfos = mem.raw_slice_data(queueCreateInfos),
+		queueCreateInfoCount = u32(len(queueCreateInfos)),
+		pEnabledFeatures = &deviceFeatures,
+		enabledExtensionCount = u32(len(device_extensions)),
+		ppEnabledExtensionNames = mem.raw_slice_data(device_extensions),
+		enabledLayerCount = 0,
+	}
+
+	if vkc.enableValidationLayers {
+		createInfo.enabledLayerCount = u32(len(validation_layers))
+		createInfo.ppEnabledLayerNames = mem.raw_slice_data(validation_layers)
+	}
 
 	if vk.CreateDevice(vkc.physicalDevice, &createInfo, nil, &vkc.device) != vk.Result.SUCCESS {
 		return false
 	}
-
 
 	vk.GetDeviceQueue(vkc.device, vkc.graphicsFamily, 0, &vkc.graphicsQueue)
 	vk.GetDeviceQueue(vkc.device, vkc.presentFamily, 0, &vkc.presentQueue)
@@ -563,7 +570,7 @@ choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR, window:^sdl
 create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	surfaceFormat := choose_swap_surface_format(vkc.formats)
 	presentMode := choose_swap_present_mode(vkc.presentModes)
-	extent := choose_swap_extent(&vkc.capabilities,vkc.window, vkc.width, vkc.height)
+	extent := choose_swap_extent(&vkc.capabilities, vkc.window, vkc.width, vkc.height)
 
 	fmt.println("extent: ",extent)
 
@@ -572,16 +579,16 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 		imageCount = vkc.capabilities.maxImageCount
 	}
 
-	createInfo := vk.SwapchainCreateInfoKHR{}
-	createInfo.sType = vk.StructureType.SWAPCHAIN_CREATE_INFO_KHR
-	createInfo.surface = vkc.surface
-
-	createInfo.minImageCount = imageCount
-	createInfo.imageFormat = surfaceFormat.format
-	createInfo.imageColorSpace = surfaceFormat.colorSpace
-	createInfo.imageExtent = extent
-	createInfo.imageArrayLayers = 1
-	createInfo.imageUsage = vk.ImageUsageFlags{.COLOR_ATTACHMENT}
+	createInfo := vk.SwapchainCreateInfoKHR {
+		sType = vk.StructureType.SWAPCHAIN_CREATE_INFO_KHR,
+		surface = vkc.surface,
+		minImageCount = imageCount,
+		imageFormat = surfaceFormat.format,
+		imageColorSpace = surfaceFormat.colorSpace,
+		imageExtent = extent,
+		imageArrayLayers = 1,
+		imageUsage = vk.ImageUsageFlags{.COLOR_ATTACHMENT},
+	}
 
 	ok := find_queue_families(vkc)
 	if !ok {
@@ -601,8 +608,6 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	createInfo.compositeAlpha = vk.CompositeAlphaFlagsKHR{.OPAQUE}
 	createInfo.presentMode = presentMode
 	createInfo.clipped = true
-
-	createInfo.oldSwapchain = 0
 
 	if vk.CreateSwapchainKHR(vkc.device, &createInfo, nil, &vkc.swapChain) != vk.Result.SUCCESS {
 		return false
@@ -662,7 +667,7 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	bindingDescription := get_binding_description()
 	attributeDescriptions := get_attribute_descriptions()
-
+	defer delete(attributeDescriptions)
 
 	vertexInputInfo := vk.PipelineVertexInputStateCreateInfo{
 		sType = vk.StructureType.PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -687,46 +692,49 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 		maxDepth = 1.0,
 	}
 
-	scissor := vk.Rect2D{}
-	scissor.offset = {0, 0}
-	scissor.extent = vkc.swapChainExtent
+	scissor := vk.Rect2D{
+		offset = {0, 0},
+		extent = vkc.swapChainExtent,
+	}
 
-	viewportState := vk.PipelineViewportStateCreateInfo{}
-	viewportState.sType = vk.StructureType.PIPELINE_VIEWPORT_STATE_CREATE_INFO
-	viewportState.viewportCount = 1
-	viewportState.pViewports = &viewport
-	viewportState.scissorCount = 1
-	viewportState.pScissors = &scissor
+	viewportState := vk.PipelineViewportStateCreateInfo{
+		sType = vk.StructureType.PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		viewportCount = 1,
+		pViewports = &viewport,
+		scissorCount = 1,
+		pScissors = &scissor,
+	}
 
-	rasterizer := vk.PipelineRasterizationStateCreateInfo{}
-	rasterizer.sType = vk.StructureType.PIPELINE_RASTERIZATION_STATE_CREATE_INFO
-	rasterizer.depthClampEnable = false
-	rasterizer.rasterizerDiscardEnable = false
-	rasterizer.polygonMode = vk.PolygonMode.FILL
-	rasterizer.lineWidth = 1.0
-	rasterizer.cullMode = vk.CullModeFlags{.BACK}
-	rasterizer.frontFace = vk.FrontFace.COUNTER_CLOCKWISE
-	rasterizer.depthBiasEnable = false
+	rasterizer := vk.PipelineRasterizationStateCreateInfo{
+		sType = vk.StructureType.PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		depthClampEnable = false,
+		rasterizerDiscardEnable = false,
+		polygonMode = vk.PolygonMode.FILL,
+		lineWidth = 1.0,
+		cullMode = vk.CullModeFlags{.BACK},
+		frontFace = vk.FrontFace.COUNTER_CLOCKWISE,
+		depthBiasEnable = false,
+	}
 
-	multisampling := vk.PipelineMultisampleStateCreateInfo{}
-	multisampling.sType = vk.StructureType.PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
-	multisampling.sampleShadingEnable = false
-	multisampling.rasterizationSamples = vk.SampleCountFlags{._1}
+	multisampling := vk.PipelineMultisampleStateCreateInfo{
+		sType = vk.StructureType.PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		sampleShadingEnable = false,
+		rasterizationSamples = vk.SampleCountFlags{._1},
+	}
 
-	colorBlendAttachment := vk.PipelineColorBlendAttachmentState{}
-	colorBlendAttachment.colorWriteMask = vk.ColorComponentFlags{.R,.G,.B,.A}
-	colorBlendAttachment.blendEnable = false
+	colorBlendAttachment := vk.PipelineColorBlendAttachmentState{
+		colorWriteMask = vk.ColorComponentFlags{.R,.G,.B,.A},
+		blendEnable = false,
+	}
 
-	colorBlending := vk.PipelineColorBlendStateCreateInfo{}
-	colorBlending.sType = vk.StructureType.PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
-	colorBlending.logicOpEnable = false
-	colorBlending.logicOp = vk.LogicOp.COPY
-	colorBlending.attachmentCount = 1
-	colorBlending.pAttachments = &colorBlendAttachment
-	colorBlending.blendConstants[0] = 0.0
-	colorBlending.blendConstants[1] = 0.0
-	colorBlending.blendConstants[2] = 0.0
-	colorBlending.blendConstants[3] = 0.0
+	colorBlending := vk.PipelineColorBlendStateCreateInfo{
+		sType = vk.StructureType.PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		logicOpEnable = false,
+		logicOp = vk.LogicOp.COPY,
+		attachmentCount = 1,
+		pAttachments = &colorBlendAttachment,
+		blendConstants = {0.0, 0.0, 0.0, 0.0},
+	}
 
 	pipelineLayoutInfo := vk.PipelineLayoutCreateInfo{
 		sType = vk.StructureType.PIPELINE_LAYOUT_CREATE_INFO,
@@ -738,20 +746,21 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 		return false
 	}
 
-	pipelineInfo := vk.GraphicsPipelineCreateInfo{}
-	pipelineInfo.sType = vk.StructureType.GRAPHICS_PIPELINE_CREATE_INFO
-	pipelineInfo.stageCount = 2
-	pipelineInfo.pStages = mem.raw_slice_data(shaderStages)
-	pipelineInfo.pVertexInputState = &vertexInputInfo
-	pipelineInfo.pInputAssemblyState = &inputAssembly
-	pipelineInfo.pViewportState = &viewportState
-	pipelineInfo.pRasterizationState = &rasterizer
-	pipelineInfo.pMultisampleState = &multisampling
-	pipelineInfo.pColorBlendState = &colorBlending
-	pipelineInfo.layout = vkc.pipelineLayout
-	pipelineInfo.renderPass = vkc.renderPass
-	pipelineInfo.subpass = 0
-	pipelineInfo.basePipelineHandle = 0
+	pipelineInfo := vk.GraphicsPipelineCreateInfo{
+		sType = vk.StructureType.GRAPHICS_PIPELINE_CREATE_INFO,
+		stageCount = 2,
+		pStages = mem.raw_slice_data(shaderStages),
+		pVertexInputState = &vertexInputInfo,
+		pInputAssemblyState = &inputAssembly,
+		pViewportState = &viewportState,
+		pRasterizationState = &rasterizer,
+		pMultisampleState = &multisampling,
+		pColorBlendState = &colorBlending,
+		layout = vkc.pipelineLayout,
+		renderPass = vkc.renderPass,
+		subpass = 0,
+		basePipelineHandle = 0,
+	}
 
 	if vk.CreateGraphicsPipelines(vkc.device, 0, 1, &pipelineInfo, nil, &vkc.graphicsPipeline) != vk.Result.SUCCESS {
 		return false
@@ -800,21 +809,35 @@ create_render_pass :: proc(vkc: ^VulkanContext) -> bool {
 		finalLayout = vk.ImageLayout.PRESENT_SRC_KHR,
 	}
 
-	colorAttachmentRef := vk.AttachmentReference{}
-	colorAttachmentRef.attachment = 0
-	colorAttachmentRef.layout = vk.ImageLayout.COLOR_ATTACHMENT_OPTIMAL
+	colorAttachmentRef := vk.AttachmentReference{
+		attachment = 0,
+		layout = vk.ImageLayout.COLOR_ATTACHMENT_OPTIMAL,
+	}
 
-	subpass := vk.SubpassDescription{}
-	subpass.pipelineBindPoint = vk.PipelineBindPoint.GRAPHICS
-	subpass.colorAttachmentCount = 1
-	subpass.pColorAttachments = &colorAttachmentRef
+	subpass := vk.SubpassDescription{
+		pipelineBindPoint = vk.PipelineBindPoint.GRAPHICS,
+		colorAttachmentCount = 1,
+		pColorAttachments = &colorAttachmentRef,
+	}
 
-	renderPassInfo := vk.RenderPassCreateInfo{}
-	renderPassInfo.sType = vk.StructureType.RENDER_PASS_CREATE_INFO
-	renderPassInfo.attachmentCount = 1
-	renderPassInfo.pAttachments = &colorAttachment
-	renderPassInfo.subpassCount = 1
-	renderPassInfo.pSubpasses = &subpass
+    dependency := vk.SubpassDependency {
+        srcSubpass = vk.SUBPASS_EXTERNAL,
+        dstSubpass = 0,
+        srcStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
+        srcAccessMask = vk.AccessFlags{},
+        dstStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
+        dstAccessMask = vk.AccessFlags{.COLOR_ATTACHMENT_WRITE},
+	}
+
+	renderPassInfo := vk.RenderPassCreateInfo{
+		sType = vk.StructureType.RENDER_PASS_CREATE_INFO,
+		attachmentCount = 1,
+		pAttachments = &colorAttachment,
+		subpassCount = 1,
+		pSubpasses = &subpass,
+        dependencyCount = 1,
+        pDependencies = &dependency,
+	}
 
 	if (vk.CreateRenderPass(vkc.device, &renderPassInfo, nil, &vkc.renderPass) != vk.Result.SUCCESS) {
 		return false
@@ -842,14 +865,15 @@ create_framebuffers :: proc(vkc: ^VulkanContext) -> bool {
 	for sciv, i in vkc.swapChainImageViews {
 		attachments := []vk.ImageView{sciv}
 
-		framebufferInfo := vk.FramebufferCreateInfo{}
-		framebufferInfo.sType = vk.StructureType.FRAMEBUFFER_CREATE_INFO
-		framebufferInfo.renderPass = vkc.renderPass
-		framebufferInfo.attachmentCount = 1
-		framebufferInfo.pAttachments = mem.raw_slice_data(attachments)
-		framebufferInfo.width = vkc.swapChainExtent.width
-		framebufferInfo.height = vkc.swapChainExtent.height
-		framebufferInfo.layers = 1
+		framebufferInfo := vk.FramebufferCreateInfo{
+			sType = vk.StructureType.FRAMEBUFFER_CREATE_INFO,
+			renderPass = vkc.renderPass,
+			attachmentCount = 1,
+			pAttachments = mem.raw_slice_data(attachments),
+			width = vkc.swapChainExtent.width,
+			height = vkc.swapChainExtent.height,
+			layers = 1,
+		}
 
 		if vk.CreateFramebuffer(vkc.device, &framebufferInfo, nil, &vkc.swapChainFramebuffers[i]) != vk.Result.SUCCESS {
 			return false
@@ -896,10 +920,10 @@ create_image_views :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_command_pool :: proc(vkc: ^VulkanContext) -> bool {
-	poolInfo := vk.CommandPoolCreateInfo{}
-	poolInfo.sType = vk.StructureType.COMMAND_POOL_CREATE_INFO
-	poolInfo.queueFamilyIndex = vkc.graphicsFamily
-
+	poolInfo := vk.CommandPoolCreateInfo{
+		sType = vk.StructureType.COMMAND_POOL_CREATE_INFO,
+		queueFamilyIndex = vkc.graphicsFamily,
+	}
 	if vk.CreateCommandPool(vkc.device, &poolInfo, nil, &vkc.commandPool) != vk.Result.SUCCESS {
 		return false
 	}
