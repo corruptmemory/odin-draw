@@ -12,6 +12,7 @@ import vkx11 "x11/vulkan"
 import xlib "x11/xlib"
 import lin "core:math/linalg/glsl"
 import time "core:time"
+import "core:thread"
 
 screen_width :: 640
 screen_height :: 480
@@ -1642,6 +1643,38 @@ load_vulkan_proc :: proc(p: rawptr, name: cstring) {
 	(^vk.ProcVoidFunction)(p)^ = ptr
 }
 
+
+Thread_Data :: struct {
+	ctx: ^VulkanContext,
+	window: ^sdl.Window,
+}
+
+draw_thread :: proc(t: ^thread.Thread) {
+	data := (^Thread_Data)(t.data)
+	ctx := data.ctx
+	window := data.window
+
+	for {
+		if !draw_frame(ctx, window) {
+			fmt.println("Could not draw frame")
+			return
+		}
+		sdl.UpdateWindowSurface(window)
+		time.sleep(10 * time.Millisecond)
+	}
+}
+
+start_draw_thread :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> ^thread.Thread {
+	data := new(Thread_Data)
+	data.ctx = vkc
+	data.window = window
+	t := thread.create(draw_thread)
+	t.id = 1
+	t.data = data
+	thread.start(t)
+	return t
+}
+
 main :: proc() {
 	vkc : VulkanContext
 	if sdl.Init(sdl.INIT_EVERYTHING) < 0 {
@@ -1811,11 +1844,13 @@ main :: proc() {
 
 	defer cleanup(&vkc)
 
-	if !draw_frame(&vkc, window) {
-		fmt.println("Could not draw frame")
-		return
-	}
-	sdl.UpdateWindowSurface(window)
+	dthread := start_draw_thread(&vkc, window)
+
+	// if !draw_frame(&vkc, window) {
+	// 	fmt.println("Could not draw frame")
+	// 	return
+	// }
+	// sdl.UpdateWindowSurface(window)
 
 	event: sdl.Event
 	stop:
@@ -1827,31 +1862,30 @@ main :: proc() {
 			case sdl.EventType.WINDOWEVENT:
 				#partial switch event.window.event {
 				case sdl.WindowEventID.RESIZED:
-					fmt.println("RESIZED!!")
-					vkc.framebufferResized = true
-					fmt.printf("new size: %d %d\n",event.window.data1,event.window.data2)
-					vkc.width = u32(event.window.data1)
-					vkc.height = u32(event.window.data2)
-					// sdl.SetWindowSize(vkc.window,event.window.data1,event.window.data2)
-					if !draw_frame(&vkc, window) {
-						fmt.println("Could not draw frame")
-						return
-					}
-					sdl.UpdateWindowSurface(window)
+					// fmt.println("RESIZED!!")
+					// vkc.framebufferResized = true
+					// fmt.printf("new size: %d %d\n",event.window.data1,event.window.data2)
+					// vkc.width = u32(event.window.data1)
+					// vkc.height = u32(event.window.data2)
+					// if !draw_frame(&vkc, window) {
+					// 	fmt.println("Could not draw frame")
+					// 	return
+					// }
+					// sdl.UpdateWindowSurface(window)
 				case sdl.WindowEventID.EXPOSED:
-					fmt.println("EXPOSED!!")
-					if !draw_frame(&vkc, window) {
-						fmt.println("Could not draw frame")
-						return
-					}
-					sdl.UpdateWindowSurface(window)
+					// fmt.println("EXPOSED!!")
+					// if !draw_frame(&vkc, window) {
+					// 	fmt.println("Could not draw frame")
+					// 	return
+					// }
+					// sdl.UpdateWindowSurface(window)
 				case sdl.WindowEventID.SHOWN:
-					fmt.println("SHOWN!!")
-					if !draw_frame(&vkc, window) {
-						fmt.println("Could not draw frame")
-						return
-					}
-					sdl.UpdateWindowSurface(window)
+					// fmt.println("SHOWN!!")
+					// if !draw_frame(&vkc, window) {
+					// 	fmt.println("Could not draw frame")
+					// 	return
+					// }
+					// sdl.UpdateWindowSurface(window)
 				}
 			case:
 				// fmt.printf("event.type: %d\n",event.type)
@@ -1866,7 +1900,7 @@ main :: proc() {
 		// sdl.UpdateWindowSurface(window)
 	}
 
-
+	thread.join(dthread)
 	// file := sdl.RwFromFile("Tree.jpg", "r")
 	// if file == nil {
 	//     fmt.printf("could not create reference to Tree.jpg: {}\n", sdl.GetError())
