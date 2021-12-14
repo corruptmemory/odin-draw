@@ -13,6 +13,7 @@ import xlib "x11/xlib"
 import lin "core:math/linalg/glsl"
 import time "core:time"
 import "core:thread"
+import "core:intrinsics"
 
 screen_width :: 640
 screen_height :: 480
@@ -72,6 +73,7 @@ VulkanContext :: struct {
 	textureSampler: vk.Sampler,
 	width: u32,
 	height: u32,
+	exit: bool,
 }
 
 Vertex :: struct {
@@ -575,8 +577,6 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 		return false
 	}
 	extent := choose_swap_extent(&vkc.capabilities, vkc.window, vkc.width, vkc.height)
-
-	fmt.println("extent: ",extent)
 
 	imageCount := vkc.capabilities.minImageCount + 1
 	if vkc.capabilities.maxImageCount > 0 && imageCount > vkc.capabilities.maxImageCount {
@@ -1472,7 +1472,6 @@ update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32) {
 
 	data: rawptr
 	vk.MapMemory(vkc.device,vkc.uniformBuffersMemory[currentImage],0,size_of(ubo),vk.MemoryMapFlags{},&data)
-	fmt.println("size_of(ubo) = ", size_of(ubo))
 	rt.mem_copy_non_overlapping(data,&ubo,size_of(ubo))
 	vk.UnmapMemory(vkc.device,vkc.uniformBuffersMemory[currentImage])
 }
@@ -1490,7 +1489,6 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 			return false
 	}
 
-	fmt.println("about to call update_uniform_buffer")
 	update_uniform_buffer(vkc, imageIndex)
 
 	if vkc.imagesInFlight[imageIndex] != 0 {
@@ -1585,8 +1583,6 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
-	fmt.print("recreating the swap chain...")
-
 	if vkc.width == 0 || vkc.height == 0 do return true
 
 	vk.DeviceWaitIdle(vkc.device)
@@ -1632,7 +1628,6 @@ recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 		fmt.println("failed create_command_buffers")
 		return false
 	}
-	fmt.println("done")
 	return true
 }
 
@@ -1654,13 +1649,15 @@ draw_thread :: proc(t: ^thread.Thread) {
 	ctx := data.ctx
 	window := data.window
 
-	for {
+	exit := intrinsics.atomic_load(&ctx.exit)
+	for !exit {
 		if !draw_frame(ctx, window) {
 			fmt.println("Could not draw frame")
 			return
 		}
 		sdl.UpdateWindowSurface(window)
 		time.sleep(10 * time.Millisecond)
+		exit = intrinsics.atomic_load(&ctx.exit)
 	}
 }
 
@@ -1846,76 +1843,24 @@ main :: proc() {
 
 	dthread := start_draw_thread(&vkc, window)
 
-	// if !draw_frame(&vkc, window) {
-	// 	fmt.println("Could not draw frame")
-	// 	return
-	// }
-	// sdl.UpdateWindowSurface(window)
-
 	event: sdl.Event
 	stop:
 	for {
 		for sdl.PollEvent(&event) != 0 {
 			#partial switch event.type {
 			case sdl.EventType.QUIT:
+				intrinsics.atomic_store(&vkc.exit, true)
 				break stop
 			case sdl.EventType.WINDOWEVENT:
 				#partial switch event.window.event {
 				case sdl.WindowEventID.RESIZED:
-					// fmt.println("RESIZED!!")
-					// vkc.framebufferResized = true
-					// fmt.printf("new size: %d %d\n",event.window.data1,event.window.data2)
-					// vkc.width = u32(event.window.data1)
-					// vkc.height = u32(event.window.data2)
-					// if !draw_frame(&vkc, window) {
-					// 	fmt.println("Could not draw frame")
-					// 	return
-					// }
-					// sdl.UpdateWindowSurface(window)
 				case sdl.WindowEventID.EXPOSED:
-					// fmt.println("EXPOSED!!")
-					// if !draw_frame(&vkc, window) {
-					// 	fmt.println("Could not draw frame")
-					// 	return
-					// }
-					// sdl.UpdateWindowSurface(window)
 				case sdl.WindowEventID.SHOWN:
-					// fmt.println("SHOWN!!")
-					// if !draw_frame(&vkc, window) {
-					// 	fmt.println("Could not draw frame")
-					// 	return
-					// }
-					// sdl.UpdateWindowSurface(window)
 				}
 			case:
-				// fmt.printf("event.type: %d\n",event.type)
-				// do nothing
 			}
-			// if !draw_frame(&vkc, window) {
-			//     fmt.println("Could not draw frame")
-			//     return
-			// }
-			// sdl.UpdateWindowSurface(window)
 		}
-		// sdl.UpdateWindowSurface(window)
 	}
 
 	thread.join(dthread)
-	// file := sdl.RwFromFile("Tree.jpg", "r")
-	// if file == nil {
-	//     fmt.printf("could not create reference to Tree.jpg: {}\n", sdl.GetError())
-	//     return
-	// }
-	// defer sdl.FreeRw(file)
-	// image := img.load_jpg_rw(file)
-	// if image == nil {
-	//     fmt.printf("could not load image: {}\n", sdl.GetError())
-	//     return
-	// }
-	// defer sdl.FreeSurface(image)
-	// screenSurface := sdl.GetWindowSurface(window)
-	// sdl.UpperBlitScaled( image, nil, screenSurface, nil)
-	// // sdl.FillRect(screenSurface, nil, sdl.MapRgb(screenSurface.format, 0xFF, 0xFF, 0xFF))
-	// sdl.UpdateWindowSurface(window)
-
 }
