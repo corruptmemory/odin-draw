@@ -113,7 +113,7 @@ check_validation_layer_support :: proc() -> bool {
 	layerCount: u32
 	vk.EnumerateInstanceLayerProperties(&layerCount, nil)
 
-	availableLayers := make([]vk.LayerProperties,layerCount)
+	availableLayers := make([]vk.LayerProperties,layerCount, context.temp_allocator)
 	vk.EnumerateInstanceLayerProperties(&layerCount, mem.raw_slice_data(availableLayers))
 
 	for layerName, _ in validation_layers {
@@ -368,7 +368,7 @@ pick_physical_device :: proc(vkc: ^VulkanContext) -> bool {
 	if physicalDevicesCount == 0 {
 		return false
 	}
-	physicalDevices := make([]vk.PhysicalDevice, physicalDevicesCount)
+	physicalDevices := make([]vk.PhysicalDevice, physicalDevicesCount, context.temp_allocator)
 	vk.EnumeratePhysicalDevices(vkc.instance, &physicalDevicesCount, mem.raw_slice_data(physicalDevices))
 	fmt.println("Found", physicalDevicesCount, "physical devices.")
 	for pd, _ in physicalDevices {
@@ -385,8 +385,7 @@ find_queue_families :: proc(vkc: ^VulkanContext) -> bool {
 	remaining := 2
 	queueFamilyCount : u32
 	vk.GetPhysicalDeviceQueueFamilyProperties(vkc.physicalDevice, &queueFamilyCount, nil)
-	queueFamilies := make([]vk.QueueFamilyProperties,queueFamilyCount)
-	defer delete(queueFamilies)
+	queueFamilies := make([]vk.QueueFamilyProperties,queueFamilyCount, context.temp_allocator)
 	vk.GetPhysicalDeviceQueueFamilyProperties(vkc.physicalDevice, &queueFamilyCount, mem.raw_slice_data(queueFamilies))
 
 	for qf, i in queueFamilies {
@@ -494,7 +493,6 @@ check_device_extension_support :: proc(vkc: ^VulkanContext) -> bool {
 	vk.EnumerateDeviceExtensionProperties(vkc.physicalDevice, nil, &extension_count, mem.raw_slice_data(available_extensions))
 
 	expected := make(map[string]bool)
-	defer delete(expected)
 	for x, _ in device_extensions {
 		expected[string(x)] = false
 	}
@@ -618,7 +616,12 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	}
 
 	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapChain, &imageCount, nil)
-	vkc.swapChainImages = make([]vk.Image,imageCount)
+	if vkc.swapChainImages == nil {
+		vkc.swapChainImages = make([]vk.Image,imageCount)
+	} else if len(vkc.swapChainImages) != int(imageCount) {
+		delete(vkc.swapChainImages)
+		vkc.swapChainImages = make([]vk.Image,imageCount)
+	}
 	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapChain, &imageCount, mem.raw_slice_data(vkc.swapChainImages))
 
 	vkc.swapChainImageFormat = surfaceFormat.format
@@ -670,8 +673,11 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 	shaderStages := []vk.PipelineShaderStageCreateInfo{vertShaderStageInfo, fragShaderStageInfo}
 
 	bindingDescription := get_binding_description()
-	attributeDescriptions := get_attribute_descriptions()
-	defer delete(attributeDescriptions)
+	attributeDescriptions : []vk.VertexInputAttributeDescription
+	{
+		context.allocator = context.temp_allocator
+		attributeDescriptions = get_attribute_descriptions()
+	}
 
 	vertexInputInfo := vk.PipelineVertexInputStateCreateInfo{
 		sType = vk.StructureType.PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -777,6 +783,16 @@ cleanup :: proc(vkc: ^VulkanContext) {
 	vk.DeviceWaitIdle(vkc.device)
 
 	cleanup_swap_chain(vkc)
+	delete(vkc.swapChainFramebuffers)
+	vkc.swapChainFramebuffers = nil
+	delete(vkc.commandBuffers)
+	vkc.commandBuffers = nil
+	delete(vkc.swapChainImageViews)
+	vkc.swapChainImageViews = nil
+	delete(vkc.uniformBuffers)
+	delete(vkc.uniformBuffersMemory)
+	vkc.uniformBuffers = nil
+	vkc.uniformBuffersMemory = nil
 
 	vk.DestroySampler(vkc.device, vkc.textureSampler, nil)
 	vk.DestroyImageView(vkc.device, vkc.textureImageView, nil)
@@ -794,6 +810,12 @@ cleanup :: proc(vkc: ^VulkanContext) {
 		vk.DestroySemaphore(vkc.device, vkc.imageAvailableSemaphores[i], nil)
 		vk.DestroyFence(vkc.device, vkc.inFlightFences[i], nil)
 	}
+	delete(vkc.renderFinishedSemaphores)
+	vkc.renderFinishedSemaphores = nil
+	delete(vkc.imageAvailableSemaphores)
+	vkc.imageAvailableSemaphores = nil
+	delete(vkc.inFlightFences)
+	vkc.inFlightFences = nil
 
 	vk.DestroyCommandPool(vkc.device, vkc.commandPool, nil)
 
@@ -801,6 +823,11 @@ cleanup :: proc(vkc: ^VulkanContext) {
 
 	vk.DestroySurfaceKHR(vkc.instance, vkc.surface, nil)
 	vk.DestroyInstance(vkc.instance, nil)
+
+	delete(vkc.formats)
+	vkc.formats = nil
+	delete(vkc.presentModes)
+	vkc.presentModes = nil
 }
 
 create_render_pass :: proc(vkc: ^VulkanContext) -> bool {
@@ -866,7 +893,12 @@ create_shader_module :: proc(vkc: ^VulkanContext, code: []byte) -> (vk.ShaderMod
 }
 
 create_framebuffers :: proc(vkc: ^VulkanContext) -> bool {
-	vkc.swapChainFramebuffers = make([]vk.Framebuffer, len(vkc.swapChainImageViews))
+	if vkc.swapChainFramebuffers == nil {
+		vkc.swapChainFramebuffers = make([]vk.Framebuffer, len(vkc.swapChainImageViews))
+	} else if len(vkc.swapChainFramebuffers) != len(vkc.swapChainImageViews) {
+		delete(vkc.swapChainFramebuffers)
+		vkc.swapChainFramebuffers = make([]vk.Framebuffer, len(vkc.swapChainImageViews))
+	}
 
 	for sciv, i in vkc.swapChainImageViews {
 		attachments := []vk.ImageView{sciv}
@@ -914,7 +946,13 @@ read_file :: proc(filename: string) -> ([]byte, bool) {
 
 
 create_image_views :: proc(vkc: ^VulkanContext) -> bool {
-	vkc.swapChainImageViews = make([]vk.ImageView,len(vkc.swapChainImages))
+	if vkc.swapChainImageViews == nil {
+		vkc.swapChainImageViews = make([]vk.ImageView,len(vkc.swapChainImages))
+	} else if len(vkc.swapChainImageViews) != len(vkc.swapChainImages) {
+		delete(vkc.swapChainImageViews)
+		vkc.swapChainImageViews = make([]vk.ImageView,len(vkc.swapChainImages))
+	}
+
 	for _, i in vkc.swapChainImageViews {
 		view, result := create_image_view(vkc, vkc.swapChainImages[i], vkc.swapChainImageFormat)
 		if !result {
@@ -937,7 +975,12 @@ create_command_pool :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
-	vkc.commandBuffers = make([]vk.CommandBuffer,len(vkc.swapChainFramebuffers))
+	if vkc.commandBuffers == nil {
+		vkc.commandBuffers = make([]vk.CommandBuffer,len(vkc.swapChainFramebuffers))
+	} else if len(vkc.commandBuffers) != len(vkc.swapChainFramebuffers) {
+		delete(vkc.commandBuffers)
+		vkc.commandBuffers = make([]vk.CommandBuffer,len(vkc.swapChainFramebuffers))
+	}
 
 	allocInfo := vk.CommandBufferAllocateInfo{
 		sType = vk.StructureType.COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1029,8 +1072,19 @@ create_descriptor_layout :: proc(vkc: ^VulkanContext) -> bool {
 create_uniform_buffers :: proc(vkc: ^VulkanContext) -> bool {
 	bufferSize := vk.DeviceSize(size_of(UniformBufferObject))
 
-	vkc.uniformBuffers = make([]vk.Buffer,len(vkc.swapChainImages))
-	vkc.uniformBuffersMemory = make([]vk.DeviceMemory,len(vkc.swapChainImages))
+	if vkc.uniformBuffers == nil {
+		vkc.uniformBuffers = make([]vk.Buffer,len(vkc.swapChainImages))
+	} else if len(vkc.uniformBuffers) != len(vkc.swapChainImages) {
+		delete(vkc.uniformBuffers)
+		vkc.uniformBuffers = make([]vk.Buffer,len(vkc.swapChainImages))
+	}
+
+	if vkc.uniformBuffersMemory == nil {
+		vkc.uniformBuffersMemory = make([]vk.DeviceMemory,len(vkc.swapChainImages))
+	} else if len(vkc.uniformBuffersMemory) != len(vkc.swapChainImages) {
+		delete(vkc.uniformBuffersMemory)
+		vkc.uniformBuffersMemory = make([]vk.DeviceMemory,len(vkc.swapChainImages))
+	}
 
 	for _, i in vkc.swapChainImages {
 		create_buffer(vkc, bufferSize, vk.BufferUsageFlags{.UNIFORM_BUFFER}, vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}, &vkc.uniformBuffers[i], &vkc.uniformBuffersMemory[i])
@@ -1066,7 +1120,7 @@ create_descriptor_pool :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
-	layouts := make([]vk.DescriptorSetLayout,len(vkc.swapChainImages))
+	layouts := make([]vk.DescriptorSetLayout,len(vkc.swapChainImages), context.temp_allocator)
 	for _, i in layouts {
 		layouts[i] = vkc.descriptorSetLayout
 	}
@@ -1077,7 +1131,12 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 		pSetLayouts = mem.raw_slice_data(layouts),
 	}
 
-	vkc.descriptorSets = make([]vk.DescriptorSet,len(vkc.swapChainImages))
+	if vkc.descriptorSets == nil {
+		vkc.descriptorSets = make([]vk.DescriptorSet,len(vkc.swapChainImages))
+	} else if len(vkc.descriptorSets) != len(vkc.swapChainImages) {
+		delete(vkc.descriptorSets)
+		vkc.descriptorSets = make([]vk.DescriptorSet,len(vkc.swapChainImages))
+	}
 
 	if vk.AllocateDescriptorSets(vkc.device,&allocInfo,mem.raw_slice_data(vkc.descriptorSets)) != vk.Result.SUCCESS {
 		return false
@@ -1433,18 +1492,39 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
 }
 
 create_sync_objects :: proc(vkc: ^VulkanContext) -> bool {
-	vkc.imageAvailableSemaphores = make([]vk.Semaphore,max_frames_in_flight)
-	vkc.renderFinishedSemaphores = make([]vk.Semaphore,max_frames_in_flight)
-	vkc.inFlightFences = make([]vk.Fence,max_frames_in_flight)
-	vkc.imagesInFlight = make([]vk.Fence,len(vkc.swapChainImages))
+	if vkc.imageAvailableSemaphores == nil {
+		vkc.imageAvailableSemaphores = make([]vk.Semaphore,max_frames_in_flight)
+	} else if len(vkc.imageAvailableSemaphores) != max_frames_in_flight {
+		delete(vkc.imageAvailableSemaphores)
+		vkc.imageAvailableSemaphores = make([]vk.Semaphore,max_frames_in_flight)
+	}
+	if vkc.renderFinishedSemaphores == nil {
+		vkc.renderFinishedSemaphores = make([]vk.Semaphore,max_frames_in_flight)
+	} else if len(vkc.renderFinishedSemaphores) != max_frames_in_flight {
+		delete(vkc.renderFinishedSemaphores)
+		vkc.renderFinishedSemaphores = make([]vk.Semaphore,max_frames_in_flight)
+	}
+	if vkc.inFlightFences == nil {
+		vkc.inFlightFences = make([]vk.Fence,max_frames_in_flight)
+	} else if len(vkc.inFlightFences) != max_frames_in_flight {
+		delete(vkc.inFlightFences)
+		vkc.inFlightFences = make([]vk.Fence,max_frames_in_flight)
+	}
+	if vkc.imagesInFlight == nil {
+		vkc.imagesInFlight = make([]vk.Fence,len(vkc.swapChainImages))
+	} else if len(vkc.imagesInFlight) != len(vkc.swapChainImages) {
+		delete(vkc.imagesInFlight)
+		vkc.imagesInFlight = make([]vk.Fence,len(vkc.swapChainImages))
+	}
 
-	semaphoreInfo := vk.SemaphoreCreateInfo{}
-	semaphoreInfo.sType = vk.StructureType.SEMAPHORE_CREATE_INFO
+	semaphoreInfo := vk.SemaphoreCreateInfo{
+		sType = vk.StructureType.SEMAPHORE_CREATE_INFO,
+	}
 
-	fenceInfo := vk.FenceCreateInfo{}
-	fenceInfo.sType = vk.StructureType.FENCE_CREATE_INFO
-	fenceInfo.flags = vk.FenceCreateFlags{.SIGNALED}
-
+	fenceInfo := vk.FenceCreateInfo{
+		sType = vk.StructureType.FENCE_CREATE_INFO,
+		flags = vk.FenceCreateFlags{.SIGNALED},
+	}
 
 	for i := 0; i < max_frames_in_flight; i += 1 {
 		if (vk.CreateSemaphore(vkc.device, &semaphoreInfo, nil, &vkc.imageAvailableSemaphores[i]) != vk.Result.SUCCESS ||
@@ -1549,12 +1629,8 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	for framebuffer, _ in vkc.swapChainFramebuffers {
 		vk.DestroyFramebuffer(vkc.device, framebuffer, nil)
 	}
-	delete(vkc.swapChainFramebuffers)
-	vkc.swapChainFramebuffers = nil
 
 	vk.FreeCommandBuffers(vkc.device, vkc.commandPool, u32(len(vkc.commandBuffers)), mem.raw_slice_data(vkc.commandBuffers))
-	delete(vkc.commandBuffers)
-	vkc.commandBuffers = nil
 
 	vk.DestroyPipeline(vkc.device, vkc.graphicsPipeline, nil)
 	vk.DestroyPipelineLayout(vkc.device, vkc.pipelineLayout, nil)
@@ -1563,8 +1639,6 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	for imageView, _ in vkc.swapChainImageViews {
 		vk.DestroyImageView(vkc.device, imageView, nil)
 	}
-	delete(vkc.swapChainImageViews)
-	vkc.swapChainImageViews = nil
 
 	vk.DestroySwapchainKHR(vkc.device, vkc.swapChain, nil)
 
@@ -1572,10 +1646,6 @@ cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 		vk.DestroyBuffer(vkc.device, vkc.uniformBuffers[i], nil)
 		vk.FreeMemory(vkc.device, vkc.uniformBuffersMemory[i], nil)
 	}
-	delete(vkc.uniformBuffers)
-	delete(vkc.uniformBuffersMemory)
-	vkc.uniformBuffers = nil
-	vkc.uniformBuffersMemory = nil
 
 	vk.DestroyDescriptorPool(vkc.device, vkc.descriptorPool, nil)
 
