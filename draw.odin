@@ -759,7 +759,7 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	pipelineInfo := vk.GraphicsPipelineCreateInfo{
 		sType = vk.StructureType.GRAPHICS_PIPELINE_CREATE_INFO,
-		stageCount = 2,
+		stageCount = auto_cast len(shaderStages),
 		pStages = mem.raw_slice_data(shaderStages),
 		pVertexInputState = &vertexInputInfo,
 		pInputAssemblyState = &inputAssembly,
