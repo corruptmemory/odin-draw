@@ -14,6 +14,7 @@ import lin "core:math/linalg/glsl"
 import time "core:time"
 import "core:thread"
 import "core:intrinsics"
+import "core:c"
 
 screen_width :: 640
 screen_height :: 480
@@ -766,7 +767,7 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	pipelineInfo := vk.GraphicsPipelineCreateInfo{
 		sType = vk.StructureType.GRAPHICS_PIPELINE_CREATE_INFO,
-		stageCount = 2,
+		stageCount = auto_cast len(shaderStages),
 		pStages = mem.raw_slice_data(shaderStages),
 		pVertexInputState = &vertexInputInfo,
 		pInputAssemblyState = &inputAssembly,
@@ -1545,13 +1546,10 @@ create_sync_objects :: proc(vkc: ^VulkanContext) -> bool {
 
 VEC3_Z_AXIS :: lin.vec3{0, 0, 1}
 
-update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32) {
-	now := time.now()
-	diff := time.duration_seconds(time.diff(vkc.startTime,now))
-
+update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32, scale: f32) {
 	ubo := UniformBufferObject {
-		model = lin.mat4Rotate(VEC3_Z_AXIS, f32(diff)*lin.radians(f32(90))),
-		view = lin.mat4LookAt(lin.vec3{1,1,1},lin.vec3{0,0,0}, VEC3_Z_AXIS),
+		model = lin.mat4Rotate(VEC3_Z_AXIS, scale*lin.radians(f32(360))),
+		view = lin.mat4LookAt(lin.vec3{2,2,2},lin.vec3{0,0,0}, VEC3_Z_AXIS),
 		proj = lin.mat4Perspective(lin.radians(f32(45)),f32(vkc.swapChainExtent.width)/f32(vkc.swapChainExtent.height),0.1,10),
 	}
 
@@ -1576,7 +1574,14 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 			return false
 	}
 
-	update_uniform_buffer(vkc, imageIndex)
+	mx, my : c.int
+	dm : sdl.DisplayMode
+	didx := sdl.GetWindowDisplayIndex(window)
+	sdl.GetCurrentDisplayMode(didx, &dm)
+	sdl.GetGlobalMouseState(&mx, &my)
+	scale := f32(mx)/f32(dm.w)
+
+	update_uniform_buffer(vkc, imageIndex, scale)
 
 	if vkc.imagesInFlight[imageIndex] != 0 {
 		vk.WaitForFences(vkc.device, 1, &vkc.imagesInFlight[imageIndex], true, bits.U64_MAX)
@@ -1733,7 +1738,7 @@ draw_thread :: proc(t: ^thread.Thread) {
 			return
 		}
 		sdl.UpdateWindowSurface(window)
-		time.sleep(10 * time.Millisecond)
+		time.sleep(16 * time.Millisecond)
 		exit = intrinsics.atomic_load(&ctx.exit)
 	}
 }
