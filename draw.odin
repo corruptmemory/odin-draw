@@ -1,6 +1,5 @@
 package main
 
-import "core:fmt"
 import "core:mem"
 import rt "core:runtime"
 import "core:math/bits"
@@ -15,11 +14,15 @@ import time "core:time"
 import "core:thread"
 import "core:intrinsics"
 import "core:c"
+import "core:log"
 
 screen_width :: 640
 screen_height :: 480
 max_frames_in_flight :: 2
 API_VERSION_1_1 :: (1<<22) | (1<<12) | (0)
+
+VERTEX_BUFFER_BIND_ID :: 0
+INSTANCE_BUFFER_BIND_ID :: 1
 
 UniformBufferObject :: struct {
 	model: lin.mat4,
@@ -59,6 +62,8 @@ VulkanContext :: struct {
 	vertexBufferMemory: vk.DeviceMemory,
 	indexBuffer: vk.Buffer,
 	indexBufferMemory: vk.DeviceMemory,
+	instanceBuffer: vk.Buffer,
+	instanceBufferMemory: vk.DeviceMemory,
 	descriptorSetLayout: vk.DescriptorSetLayout,
 	uniformBuffers: []vk.Buffer,
 	uniformBuffersMemory: []vk.DeviceMemory,
@@ -81,6 +86,10 @@ Vertex :: struct {
 	pos: lin.vec2,
 	color: lin.vec3,
 	texCoord: lin.vec2,
+}
+
+InstanceData :: struct {
+	pos: lin.vec3,
 }
 
 vuklan_proc_address_loader: vk.ProcGetInstanceProcAddr
@@ -137,35 +146,49 @@ check_validation_layer_support :: proc() -> bool {
 	return true
 }
 
-get_binding_description :: proc() -> vk.VertexInputBindingDescription {
-	bindingDescription := vk.VertexInputBindingDescription{
-		binding = 0,
-		stride = size_of(Vertex),
-		inputRate = vk.VertexInputRate.VERTEX,
+get_binding_descriptions :: proc() -> []vk.VertexInputBindingDescription {
+	bindingDescription := []vk.VertexInputBindingDescription{
+		{
+			binding = VERTEX_BUFFER_BIND_ID,
+			stride = size_of(Vertex),
+			inputRate = vk.VertexInputRate.VERTEX,
+		},
+		{
+			binding = INSTANCE_BUFFER_BIND_ID,
+			stride = size_of(InstanceData),
+			inputRate = vk.VertexInputRate.INSTANCE,
+		},
 	}
-
-	return bindingDescription
+	result := make([]vk.VertexInputBindingDescription, len(bindingDescription))
+	copy(result, bindingDescription)
+	return result
 }
 
 get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
 	attributeDescriptions := []vk.VertexInputAttributeDescription{
 		{
-			binding = 0,
+			binding = VERTEX_BUFFER_BIND_ID,
 			location = 0,
 			format = vk.Format.R32G32_SFLOAT,
 			offset = u32(offset_of(Vertex,pos)),
 		},
 		{
-			binding = 0,
+			binding = VERTEX_BUFFER_BIND_ID,
 			location = 1,
 			format = vk.Format.R32G32B32_SFLOAT,
 			offset = u32(offset_of(Vertex,color)),
 		},
 		{
-			binding = 0,
+			binding = VERTEX_BUFFER_BIND_ID,
 			location = 2,
 			format = vk.Format.R32G32_SFLOAT,
 			offset = u32(offset_of(Vertex, texCoord)),
+		},
+		{
+			binding = INSTANCE_BUFFER_BIND_ID,
+			location = 3,
+			format = vk.Format.R32G32B32_SFLOAT,
+			offset = u32(offset_of(InstanceData, pos)),
 		},
 	}
 	result := make([]vk.VertexInputAttributeDescription, len(attributeDescriptions))
@@ -184,6 +207,37 @@ find_memory_type :: proc(vkc:^VulkanContext, typeFilter:u32, properties: vk.Memo
 	}
 
 	return 0, false
+}
+
+prepare_instance_data :: proc(vkc:^VulkanContext) -> bool {
+	instance_data := []InstanceData {
+		{{0.0, 0.0, 0.0}},
+		{{0.1, 0.1, 0.1}},
+	}
+
+	bufferSize := vk.DeviceSize(size_of(InstanceData) * len(instance_data))
+
+	stagingBuffer : vk.Buffer
+	stagingBufferMemory: vk.DeviceMemory
+	if (!create_buffer(vkc, bufferSize, vk.BufferUsageFlags{.TRANSFER_SRC}, vk.MemoryPropertyFlags{.HOST_VISIBLE, .HOST_COHERENT}, &stagingBuffer, &stagingBufferMemory)) {
+		return false
+	}
+
+	if (!create_buffer(vkc, bufferSize, vk.BufferUsageFlags{.TRANSFER_DST, .VERTEX_BUFFER}, vk.MemoryPropertyFlags{.DEVICE_LOCAL}, &vkc.instanceBuffer, &vkc.instanceBufferMemory)) {
+		return false
+	}
+
+	data : rawptr
+	vk.MapMemory(vkc.device, stagingBufferMemory, 0, bufferSize, vk.MemoryMapFlags{}, &data)
+	rt.mem_copy_non_overlapping(data, mem.raw_slice_data(instance_data), int(bufferSize))
+	vk.UnmapMemory(vkc.device, stagingBufferMemory)
+
+	copy_buffer(vkc,stagingBuffer, vkc.instanceBuffer, bufferSize)
+
+	vk.DestroyBuffer(vkc.device, stagingBuffer, nil)
+	vk.FreeMemory(vkc.device, stagingBufferMemory, nil)
+
+	return true
 }
 
 create_buffer :: proc(vkc: ^VulkanContext, size: vk.DeviceSize, usage: vk.BufferUsageFlags, properties: vk.MemoryPropertyFlags, buffer: ^vk.Buffer, bufferMemory: ^vk.DeviceMemory) -> bool {
@@ -244,15 +298,7 @@ create_index_buffer :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
-	vertices_copy := make([dynamic]Vertex, len(vertices)*2, context.temp_allocator)
-	bufferSize : vk.DeviceSize = vk.DeviceSize(size_of(vertices_copy[0]) * len(vertices_copy))
-	copy(vertices_copy[:len(vertices)], vertices)
-	copy(vertices_copy[len(vertices):], vertices)
-
-	for i in 0..<len(vertices) {
-		vertices_copy[i].pos += {0.25, 0.0}
-		vertices_copy[i+len(vertices)].pos += {-0.25, 0.0}
-	}
+	bufferSize : vk.DeviceSize = vk.DeviceSize(size_of(vertices[0]) * len(vertices))
 
 	stagingBuffer: vk.Buffer
 	stagingBufferMemory: vk.DeviceMemory
@@ -262,7 +308,7 @@ create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
 
 	data: rawptr
 	vk.MapMemory(vkc.device, stagingBufferMemory, 0, bufferSize, vk.MemoryMapFlags{}, &data)
-	rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices_copy[:]), int(bufferSize))
+	rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices), int(bufferSize))
 	vk.UnmapMemory(vkc.device, stagingBufferMemory)
 
 	if !create_buffer(vkc,bufferSize,vk.BufferUsageFlags{.TRANSFER_DST, .VERTEX_BUFFER}, vk.MemoryPropertyFlags{.DEVICE_LOCAL},&vkc.vertexBuffer,&vkc.vertexBufferMemory) {
@@ -317,7 +363,7 @@ copy_buffer :: proc(vkc: ^VulkanContext, srcBuffer: vk.Buffer, dstBuffer: vk.Buf
 create_instance :: proc(vkc : ^VulkanContext) -> bool {
 	// @todo Enable validation layers?
 	if vkc.enableValidationLayers && !check_validation_layer_support() {
-		fmt.println("Could not find validation layer support")
+		log.debug("Could not find validation layer support")
 		return false
 	}
 
@@ -347,9 +393,9 @@ create_instance :: proc(vkc : ^VulkanContext) -> bool {
 
 	result := vk.CreateInstance(&instanceCreateInfo, nil, &vkc.instance)
 	if result == vk.Result.SUCCESS {
-		fmt.println("Successfully created instance!")
+		log.debug("Successfully created instance!")
 	} else {
-		fmt.println("Unable to create instance!")
+		log.debug("Unable to create instance!")
 		return false
 	}
 
@@ -379,10 +425,10 @@ pick_physical_device :: proc(vkc: ^VulkanContext) -> bool {
 	}
 	physicalDevices := make([]vk.PhysicalDevice, physicalDevicesCount, context.temp_allocator)
 	vk.EnumeratePhysicalDevices(vkc.instance, &physicalDevicesCount, mem.raw_slice_data(physicalDevices))
-	fmt.println("Found", physicalDevicesCount, "physical devices.")
+	log.debug("Found", physicalDevicesCount, "physical devices.")
 	for pd, _ in physicalDevices {
 		if is_device_suitable(pd) {
-			fmt.println("** picked a physical device")
+			log.debug("** picked a physical device")
 			vkc.physicalDevice = pd
 			return true
 		}
@@ -478,15 +524,15 @@ create_surface :: proc(vkc: ^VulkanContext, sdlWindow: ^sdl.Window) -> bool {
 	info : sdl.SysWMinfo
 	sdl.GetVersion(&info.version)
 	if sdl.GetWindowWMInfo(sdlWindow, &info) == false {
-		fmt.println("Could not get window info.")
+		log.debug("Could not get window info.")
 		return false
 	}
-	fmt.println("WOOT!  Got Window info: ", info)
+	log.debug("WOOT!  Got Window info: ", info)
 	createInfo.dpy = (^xlib.Display)(info.info.x11.display)
 	createInfo.window = xlib.Window(info.info.x11.window)
 	result := vkx11.CreateXlibSurfaceKHR(vkc.instance, &createInfo, nil, &surface)
 	if result != vk.Result.SUCCESS {
-		fmt.println("Failed to create surface: ", result)
+		log.debug("Failed to create surface: ", result)
 		return false
 	}
 	vkc.surface = surface
@@ -516,30 +562,30 @@ check_device_extension_support :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 query_swap_chain_support :: proc(vkc: ^VulkanContext) -> bool {
-	fmt.println("get_physical_device_surface_capabilities_khr")
-	fmt.printf("vkc.physicalDevice: %v\n", vkc.physicalDevice)
+	log.debug("get_physical_device_surface_capabilities_khr")
+	log.debugf("vkc.physicalDevice: %v", vkc.physicalDevice)
 	if vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.physicalDevice, vkc.surface, &vkc.capabilities) != vk.Result.SUCCESS {
 		return false
 	}
 
 	formatCount:u32
-	fmt.println("get_physical_device_surface_formats_khr")
+	log.debug("get_physical_device_surface_formats_khr")
 	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.physicalDevice, vkc.surface, &formatCount, nil)
 	if formatCount == 0 {
 		return false
 	}
 	vkc.formats = make([]vk.SurfaceFormatKHR,formatCount)
-	fmt.println("get_physical_device_surface_formats_khr")
+	log.debug("get_physical_device_surface_formats_khr")
 	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.physicalDevice, vkc.surface, &formatCount, mem.raw_slice_data(vkc.formats))
 
 	presentModeCount:u32
-	fmt.println("get_physical_device_surface_present_modes_khr")
+	log.debug("get_physical_device_surface_present_modes_khr")
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.physicalDevice, vkc.surface, &presentModeCount, nil)
 	if presentModeCount == 0 {
 		return false
 	}
 	vkc.presentModes = make([]vk.PresentModeKHR,presentModeCount)
-	fmt.println("get_physical_device_surface_present_modes_khr")
+	log.debug("get_physical_device_surface_present_modes_khr")
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.physicalDevice, vkc.surface, &presentModeCount, mem.raw_slice_data(vkc.presentModes))
 	return true
 }
@@ -681,7 +727,11 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	shaderStages := []vk.PipelineShaderStageCreateInfo{vertShaderStageInfo, fragShaderStageInfo}
 
-	bindingDescription := get_binding_description()
+	bindingDescriptions : []vk.VertexInputBindingDescription
+	{
+		context.allocator = context.temp_allocator
+		bindingDescriptions = get_binding_descriptions()
+	}
 	attributeDescriptions : []vk.VertexInputAttributeDescription
 	{
 		context.allocator = context.temp_allocator
@@ -690,9 +740,9 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 
 	vertexInputInfo := vk.PipelineVertexInputStateCreateInfo{
 		sType = vk.StructureType.PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		vertexBindingDescriptionCount = 1,
+		vertexBindingDescriptionCount = u32(len(bindingDescriptions)),
 		vertexAttributeDescriptionCount = u32(len(attributeDescriptions)),
-		pVertexBindingDescriptions = &bindingDescription,
+		pVertexBindingDescriptions = mem.raw_slice_data(bindingDescriptions),
 		pVertexAttributeDescriptions = mem.raw_slice_data(attributeDescriptions),
 	}
 
@@ -813,6 +863,8 @@ cleanup :: proc(vkc: ^VulkanContext) {
 	vk.FreeMemory(vkc.device, vkc.indexBufferMemory, nil)
 	vk.DestroyBuffer(vkc.device,vkc.vertexBuffer,nil)
 	vk.FreeMemory(vkc.device, vkc.vertexBufferMemory, nil)
+	vk.DestroyBuffer(vkc.device,vkc.instanceBuffer,nil)
+	vk.FreeMemory(vkc.device, vkc.instanceBufferMemory, nil)
 
 	for i := 0; i < max_frames_in_flight; i += 1 {
 		vk.DestroySemaphore(vkc.device, vkc.renderFinishedSemaphores[i], nil)
@@ -932,21 +984,21 @@ create_framebuffers :: proc(vkc: ^VulkanContext) -> bool {
 read_file :: proc(filename: string) -> ([]byte, bool) {
 		fd, errno := os.open(filename)
 		if errno != 0 {
-			fmt.println("Failed to read:", filename, " error:", errno)
+			log.debug("Failed to read:", filename, " error:", errno)
 			return nil, false
 		}
 		defer os.close(fd)
 		size: i64
 		size, errno = os.file_size(fd)
 		if errno != 0 {
-			fmt.println("Failed to get file size:", filename, " error:", errno)
+			log.debug("Failed to get file size:", filename, " error:", errno)
 			return nil, false
 		}
 		result := make([]byte,size)
 		_, errno = os.read(fd,result)
 		if errno != 0 {
 			delete(result)
-			fmt.println("Failed to read file:", filename, " error:", errno)
+			log.debug("Failed to read file:", filename, " error:", errno)
 			return nil, false
 		}
 
@@ -1030,9 +1082,9 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 		vk.CmdBeginRenderPass(cb, &renderPassInfo, vk.SubpassContents.INLINE)
 		vk.CmdBindPipeline(cb, vk.PipelineBindPoint.GRAPHICS, vkc.graphicsPipeline)
 
-		vertexBuffers := []vk.Buffer{vkc.vertexBuffer}
 		offsets := []vk.DeviceSize{0}
-		vk.CmdBindVertexBuffers(vkc.commandBuffers[i], 0, 1, mem.raw_slice_data(vertexBuffers), mem.raw_slice_data(offsets))
+		vk.CmdBindVertexBuffers(vkc.commandBuffers[i], VERTEX_BUFFER_BIND_ID, 1, &vkc.vertexBuffer, mem.raw_slice_data(offsets))
+		vk.CmdBindVertexBuffers(vkc.commandBuffers[i], INSTANCE_BUFFER_BIND_ID, 1, &vkc.instanceBuffer, mem.raw_slice_data(offsets))
 		vk.CmdBindIndexBuffer(vkc.commandBuffers[i],vkc.indexBuffer,0,vk.IndexType.UINT16)
 		vk.CmdBindDescriptorSets(vkc.commandBuffers[i], vk.PipelineBindPoint.GRAPHICS, vkc.pipelineLayout, 0, 1, &vkc.descriptorSets[i], 0, nil)
 		vk.CmdDrawIndexed(vkc.commandBuffers[i], u32(len(indices)), 2, 0, 0, 0)
@@ -1239,7 +1291,7 @@ create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
 		}
 
 		if vk.CreateSampler(vkc.device, &samplerInfo, nil, &vkc.textureSampler) != vk.Result.SUCCESS {
-			fmt.println("failed to create texture sampler!")
+			log.debug("failed to create texture sampler!")
 			return false
 		}
 		return true
@@ -1286,7 +1338,7 @@ render_image :: proc(surface: ^sdl.Surface) {
 create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 	origImageSurface := img.Load("textures/texture.jpg")
 	if origImageSurface == nil {
-		fmt.println("Error loading texture image")
+		log.debug("Error loading texture image")
 		return false
 	}
 	defer sdl.FreeSurface(origImageSurface)
@@ -1302,7 +1354,7 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 	}
 	err := sdl.UpperBlit(origImageSurface,&rect,targetSurface,&rect)
 	if err != 0 {
-		fmt.printf("Error blitting texture image to target surface: %d\n", err)
+		log.debugf("Error blitting texture image to target surface: %d", err)
 		return false
 	}
 	// render_image(targetSurface)
@@ -1324,7 +1376,7 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 	vk.UnmapMemory(vkc.device, stagingBufferMemory)
 
 	if !create_image(vkc, u32(texWidth), u32(texHeight), vk.Format.R8G8B8A8_SRGB,vk.ImageTiling.OPTIMAL, vk.ImageUsageFlags{.TRANSFER_DST, .SAMPLED}, vk.MemoryPropertyFlags{.DEVICE_LOCAL}, &vkc.textureImage, &vkc.textureImageMemory) {
-		fmt.println("Error: could not create image")
+		log.debug("Error: could not create image")
 		return false
 	}
 
@@ -1431,7 +1483,7 @@ transition_image_layout :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk
 		sourceStage = vk.PipelineStageFlags{.TRANSFER}
 		destinationStage = vk.PipelineStageFlags{.FRAGMENT_SHADER}
 	} else {
-		fmt.println("unsupported layout transition!")
+		log.debug("unsupported layout transition!")
 		return false
 	}
 
@@ -1470,7 +1522,7 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
 	}
 
 	if vk.CreateImage(vkc.device, &imageInfo, nil, image) != vk.Result.SUCCESS {
-		fmt.println("Failed to create image for the texture map")
+		log.debug("Failed to create image for the texture map")
 		return false
 	}
 
@@ -1479,7 +1531,7 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
 
 	mt, ok := find_memory_type(vkc, memRequirements.memoryTypeBits, properties)
 	if !ok {
-		fmt.println("Error: failed to find memory")
+		log.debug("Error: failed to find memory")
 		return false
 	}
 
@@ -1490,7 +1542,7 @@ create_image :: proc(vkc: ^VulkanContext, width, height: u32, format: vk.Format,
 	}
 
 	if vk.AllocateMemory(vkc.device, &allocInfo, nil, imageMemory) != vk.Result.SUCCESS {
-		fmt.println("Error: failed to allocate memory in device")
+		log.debug("Error: failed to allocate memory in device")
 		return false
 	}
 
@@ -1625,7 +1677,7 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 	if result == vk.Result.ERROR_OUT_OF_DATE_KHR || result == vk.Result.SUBOPTIMAL_KHR || vkc.framebufferResized {
 		vkc.framebufferResized = false
 		if !recreate_swap_chain(vkc) {
-			fmt.println("failed to recreate swap chain")
+			log.debug("failed to recreate swap chain")
 			return false
 		}
 		return true
@@ -1670,44 +1722,44 @@ recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	vk.DeviceWaitIdle(vkc.device)
 
 	if !cleanup_swap_chain(vkc) {
-		fmt.println("Failed to clean up swap chain")
+		log.debug("Failed to clean up swap chain")
 		return false
 	}
 
 	if !create_swap_chain(vkc) {
-		fmt.println("failed create_swap_chain")
+		log.debug("failed create_swap_chain")
 		return false
 	}
 	if !create_image_views(vkc) {
-		fmt.println("failed create_image_views")
+		log.debug("failed create_image_views")
 		return false
 	}
 	if !create_render_pass(vkc) {
-		fmt.println("failed create_render_pass")
+		log.debug("failed create_render_pass")
 		return false
 	}
 	if !create_graphics_pipeline(vkc) {
-		fmt.println("failed create_graphics_pipeline")
+		log.debug("failed create_graphics_pipeline")
 		return false
 	}
 	if !create_framebuffers(vkc) {
-		fmt.println("failed create_framebuffers")
+		log.debug("failed create_framebuffers")
 		return false
 	}
 	if !create_uniform_buffers(vkc) {
-		fmt.println("failed create_uniform_buffers")
+		log.debug("failed create_uniform_buffers")
 		return false
 	}
 	if !create_descriptor_pool(vkc) {
-		fmt.println("failed create_descriptor_pool")
+		log.debug("failed create_descriptor_pool")
 		return false
 	}
 	if !create_descriptor_sets(vkc) {
-		fmt.println("failed create_descriptor_sets")
+		log.debug("failed create_descriptor_sets")
 		return false
 	}
 	if !create_command_buffers(vkc) {
-		fmt.println("failed create_command_buffers")
+		log.debug("failed create_command_buffers")
 		return false
 	}
 	return true
@@ -1734,7 +1786,7 @@ draw_thread :: proc(t: ^thread.Thread) {
 	exit := intrinsics.atomic_load(&ctx.exit)
 	for !exit {
 		if !draw_frame(ctx, window) {
-			fmt.println("Could not draw frame")
+			log.debug("Could not draw frame")
 			return
 		}
 		sdl.UpdateWindowSurface(window)
@@ -1755,14 +1807,15 @@ start_draw_thread :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> ^thread.T
 }
 
 main :: proc() {
+	context.logger = log.create_console_logger()
 	vkc : VulkanContext
 	if sdl.Init(sdl.INIT_EVERYTHING) < 0 {
-		fmt.printf("failed to initialize sdl", sdl.GetError())
+		log.debugf("failed to initialize sdl", sdl.GetError())
 		return
 	}
 	defer sdl.Quit()
 	if sdl.Vulkan_LoadLibrary(nil) < 0 {
-		fmt.printf("failed to load Vulkan", sdl.GetError())
+		log.debugf("failed to load Vulkan", sdl.GetError())
 		return
 	}
 	defer sdl.Vulkan_UnloadLibrary()
@@ -1778,15 +1831,15 @@ main :: proc() {
 
 	vk.load_proc_addresses(load_vulkan_proc)
 
-	fmt.println(" pick_physical_device(&vkc);")
+	log.debug(" pick_physical_device(&vkc);")
 	ok := pick_physical_device(&vkc)
 	if !ok {
-		fmt.println("No suitable physical devices found.")
+		log.debug("No suitable physical devices found.")
 		return
 	}
 
 	if !check_device_extension_support(&vkc) {
-		fmt.println("Device does not support needed extensions")
+		log.debug("Device does not support needed extensions")
 		return
 	}
 
@@ -1796,7 +1849,7 @@ main :: proc() {
 		screen_width, screen_height,
 		sdl.WindowFlags{.SHOWN, .VULKAN,.RESIZABLE})
 	if window == nil {
-		fmt.printf("could not create window: {}\n", sdl.GetError())
+		log.debugf("could not create window: {}", sdl.GetError())
 		return
 	}
 	vkc.window = window
@@ -1806,118 +1859,122 @@ main :: proc() {
 	vkc.height = u32(height)
 	defer sdl.DestroyWindow(window)
 
-	fmt.println("create_surface(&vkc, window);")
+	log.debug("create_surface(&vkc, window);")
 	ok = create_surface(&vkc, window)
 	if !ok {
-		fmt.println("Could not create Vulkan surface.")
+		log.debug("Could not create Vulkan surface.")
 		return
 	}
 
-	fmt.println("find_queue_families(&vkc);")
+	log.debug("find_queue_families(&vkc);")
 	ok = find_queue_families(&vkc)
 	if !ok {
-		fmt.println("Could not retrieve queue families.")
+		log.debug("Could not retrieve queue families.")
 		return
 	}
 
-	fmt.println("create_logical_device(&vkc);")
+	log.debug("create_logical_device(&vkc);")
 	ok = create_logical_device(&vkc)
 	if !ok {
-		fmt.println("Could not create logical device.")
+		log.debug("Could not create logical device.")
 		return
 	}
 
-	fmt.println("query_swap_chain_support(&vkc);")
+	log.debug("query_swap_chain_support(&vkc);")
 	ok = query_swap_chain_support(&vkc)
 	if !ok {
-		fmt.println("Couldn't get swap chain support data.")
+		log.debug("Couldn't get swap chain support data.")
 		return
 	}
 
-	fmt.println("create_swap_chain(&vkc);")
+	log.debug("create_swap_chain(&vkc);")
 	ok = create_swap_chain(&vkc)
 	if !ok {
-		fmt.println("Could not get swap chain")
+		log.debug("Could not get swap chain")
 		return
 	}
 
 	if !create_image_views(&vkc) {
-		fmt.println("Could not initialize swap chaing images")
-		return
-	}
-
-	if !create_render_pass(&vkc) {
-		fmt.println("Could not create render pass")
-		return
-	}
-
-	if !create_descriptor_layout(&vkc) {
-		fmt.println("Could not create descriptor layout")
-		return
-	}
-
-	if !create_graphics_pipeline(&vkc) {
-		fmt.println("Could not create graphics pipeline")
-		return
-	}
-
-	if !create_framebuffers(&vkc) {
-		fmt.println("Could not create frame buffers")
+		log.debug("Could not initialize swap chaing images")
 		return
 	}
 
 	if !create_command_pool(&vkc) {
-		fmt.println("Could not create command pool")
+		log.debug("Could not create command pool")
+		return
+	}
+
+	if !prepare_instance_data(&vkc) {
+		log.debug("Could not prepare instance data")
+	}
+
+	if !create_render_pass(&vkc) {
+		log.debug("Could not create render pass")
+		return
+	}
+
+	if !create_descriptor_layout(&vkc) {
+		log.debug("Could not create descriptor layout")
+		return
+	}
+
+	if !create_graphics_pipeline(&vkc) {
+		log.debug("Could not create graphics pipeline")
+		return
+	}
+
+	if !create_framebuffers(&vkc) {
+		log.debug("Could not create frame buffers")
 		return
 	}
 
 	if !create_texture_image(&vkc) {
-		fmt.println("Could not create texture image")
+		log.debug("Could not create texture image")
 		return
 	}
 
 	if !create_texture_image_view(&vkc) {
-		fmt.println("Could not create texture image view")
+		log.debug("Could not create texture image view")
 		return
 	}
 
 	if !create_texture_sampler(&vkc) {
-		fmt.println("Could not create texture sampler")
+		log.debug("Could not create texture sampler")
 		return
 	}
 
 	if !create_vertex_buffer(&vkc) {
-		fmt.println("Could not create vertex buffers")
+		log.debug("Could not create vertex buffers")
 		return
 	}
 
 	if !create_index_buffer(&vkc) {
-		fmt.println("Could not create index buffers")
+		log.debug("Could not create index buffers")
 		return
 	}
 
 	if !create_uniform_buffers(&vkc) {
-		fmt.println("Could not create uniform buffers")
+		log.debug("Could not create uniform buffers")
 		return
 	}
 
 	if !create_descriptor_pool(&vkc) {
-		fmt.println("Could not create descriptor pool")
+		log.debug("Could not create descriptor pool")
 		return
 	}
 
 	if !create_descriptor_sets(&vkc) {
-		fmt.println("Could not create descriptor sets")
+		log.debug("Could not create descriptor sets")
 		return
 	}
 
 	if !create_command_buffers(&vkc) {
-		fmt.println("Could not create command buffers")
+		log.debug("Could not create command buffers")
 		return
 	}
 
 	if !create_sync_objects(&vkc) {
-		fmt.println("Could not create sync objects")
+		log.debug("Could not create sync objects")
 		return
 	}
 
