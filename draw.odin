@@ -243,7 +243,15 @@ create_index_buffer :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
-	bufferSize : vk.DeviceSize = vk.DeviceSize(size_of(vertices[0]) * len(vertices))
+	vertices_copy := make([dynamic]Vertex, len(vertices)*2, context.temp_allocator)
+	bufferSize : vk.DeviceSize = vk.DeviceSize(size_of(vertices_copy[0]) * len(vertices_copy))
+	copy(vertices_copy[:len(vertices)], vertices)
+	copy(vertices_copy[len(vertices):], vertices)
+
+	for i in 0..<len(vertices) {
+		vertices_copy[i].pos += {0.25, 0.0}
+		vertices_copy[i+len(vertices)].pos += {-0.25, 0.0}
+	}
 
 	stagingBuffer: vk.Buffer
 	stagingBufferMemory: vk.DeviceMemory
@@ -253,7 +261,7 @@ create_vertex_buffer :: proc(vkc: ^VulkanContext) -> bool {
 
 	data: rawptr
 	vk.MapMemory(vkc.device, stagingBufferMemory, 0, bufferSize, vk.MemoryMapFlags{}, &data)
-	rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices), int(bufferSize))
+	rt.mem_copy_non_overlapping(data, mem.raw_slice_data(vertices_copy[:]), int(bufferSize))
 	vk.UnmapMemory(vkc.device, stagingBufferMemory)
 
 	if !create_buffer(vkc,bufferSize,vk.BufferUsageFlags{.TRANSFER_DST, .VERTEX_BUFFER}, vk.MemoryPropertyFlags{.DEVICE_LOCAL},&vkc.vertexBuffer,&vkc.vertexBufferMemory) {
@@ -1000,7 +1008,13 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 			return false
 		}
 
-		renderPassInfo := vk.RenderPassBeginInfo{
+		clearColor := vk.ClearValue{
+			color = {
+				float32 = {0.0, 0.0, 0.0, 1.0},
+			},
+		}
+
+		renderPassInfo := vk.RenderPassBeginInfo {
 			sType = vk.StructureType.RENDER_PASS_BEGIN_INFO,
 			renderPass = vkc.renderPass,
 			framebuffer = vkc.swapChainFramebuffers[i],
@@ -1008,16 +1022,11 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 				offset = {0, 0},
 				extent = vkc.swapChainExtent,
 			},
+			clearValueCount = 1,
+			pClearValues = &clearColor,
 		}
 
-		clearColor := vk.ClearValue{}
-		clearColor.color.float32 = {0.0, 0.0, 0.0, 1.0}
-
-		renderPassInfo.clearValueCount = 1
-		renderPassInfo.pClearValues = &clearColor
-
 		vk.CmdBeginRenderPass(cb, &renderPassInfo, vk.SubpassContents.INLINE)
-
 		vk.CmdBindPipeline(cb, vk.PipelineBindPoint.GRAPHICS, vkc.graphicsPipeline)
 
 		vertexBuffers := []vk.Buffer{vkc.vertexBuffer}
@@ -1025,9 +1034,7 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 		vk.CmdBindVertexBuffers(vkc.commandBuffers[i], 0, 1, mem.raw_slice_data(vertexBuffers), mem.raw_slice_data(offsets))
 		vk.CmdBindIndexBuffer(vkc.commandBuffers[i],vkc.indexBuffer,0,vk.IndexType.UINT16)
 		vk.CmdBindDescriptorSets(vkc.commandBuffers[i], vk.PipelineBindPoint.GRAPHICS, vkc.pipelineLayout, 0, 1, &vkc.descriptorSets[i], 0, nil)
-		vk.CmdDrawIndexed(vkc.commandBuffers[i], u32(len(indices)), 1, 0, 0, 0)
-
-		// vk.CmdDraw(cb, 3, 1, 0, 0)
+		vk.CmdDrawIndexed(vkc.commandBuffers[i], u32(len(indices)), 2, 0, 0, 0)
 
 		vk.CmdEndRenderPass(cb)
 
@@ -1544,7 +1551,7 @@ update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32) {
 
 	ubo := UniformBufferObject {
 		model = lin.mat4Rotate(VEC3_Z_AXIS, f32(diff)*lin.radians(f32(90))),
-		view = lin.mat4LookAt(lin.vec3{2,2,2},lin.vec3{0,0,0}, VEC3_Z_AXIS),
+		view = lin.mat4LookAt(lin.vec3{1,1,1},lin.vec3{0,0,0}, VEC3_Z_AXIS),
 		proj = lin.mat4Perspective(lin.radians(f32(45)),f32(vkc.swapChainExtent.width)/f32(vkc.swapChainExtent.height),0.1,10),
 	}
 
