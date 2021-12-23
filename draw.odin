@@ -64,6 +64,9 @@ VulkanContext :: struct {
 	indexBufferMemory: vk.DeviceMemory,
 	instanceBuffer: vk.Buffer,
 	instanceBufferMemory: vk.DeviceMemory,
+    depthImage: vk.Image,
+    depthImageMemory: vk.DeviceMemory,
+    depthImageView: vk.ImageView,
 	descriptorSetLayout: vk.DescriptorSetLayout,
 	uniformBuffers: []vk.Buffer,
 	uniformBuffersMemory: []vk.DeviceMemory,
@@ -83,22 +86,23 @@ VulkanContext :: struct {
 }
 
 Vertex :: struct {
-	pos: lin.vec2,
+	pos: lin.vec3,
 	color: lin.vec3,
 	texCoord: lin.vec2,
 }
 
 InstanceData :: struct {
 	pos: lin.vec3,
+	rot: lin.vec3,
 }
 
 vuklan_proc_address_loader: vk.ProcGetInstanceProcAddr
 
 vertices :: []Vertex {
-	{{-0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
-	{{0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
-	{{0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
-	{{-0.5, 0.5}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
+	{{-0.5, -0.5, 0.0}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
+	{{0.5, -0.5, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
+	{{0.5, 0.5, 0.0}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
+	{{-0.5, 0.5, 0.0}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
 }
 
 indices :: []u16 {0,1,2,2,3,0}
@@ -169,7 +173,7 @@ get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
 		{
 			binding = VERTEX_BUFFER_BIND_ID,
 			location = 0,
-			format = vk.Format.R32G32_SFLOAT,
+			format = vk.Format.R32G32B32_SFLOAT,
 			offset = u32(offset_of(Vertex,pos)),
 		},
 		{
@@ -190,11 +194,54 @@ get_attribute_descriptions :: proc() -> []vk.VertexInputAttributeDescription {
 			format = vk.Format.R32G32B32_SFLOAT,
 			offset = u32(offset_of(InstanceData, pos)),
 		},
+		{
+			binding = INSTANCE_BUFFER_BIND_ID,
+			location = 4,
+			format = vk.Format.R32G32B32_SFLOAT,
+			offset = u32(offset_of(InstanceData, rot)),
+		},
 	}
 	result := make([]vk.VertexInputAttributeDescription, len(attributeDescriptions))
 	copy(result, attributeDescriptions)
 	return result
 }
+
+create_depth_resources :: proc(vkc: ^VulkanContext) -> bool {
+    depth_format := find_depth_format(vkc)
+
+	result := create_image(vkc, vkc.swapChainExtent.width, vkc.swapChainExtent.height, depth_format, vk.ImageTiling.OPTIMAL, vk.ImageUsageFlags{.DEPTH_STENCIL_ATTACHMENT}, vk.MemoryPropertyFlags{.DEVICE_LOCAL}, &vkc.depthImage, &vkc.depthImageMemory)
+	if (!result) {
+		return result
+	}
+	vkc.depthImageView, result = create_image_view(vkc, vkc.depthImage, depth_format, vk.ImageAspectFlags{.DEPTH})
+	return result
+}
+
+find_supported_format :: proc(vkc: ^VulkanContext, candidates: []vk.Format, tiling: vk.ImageTiling, features: vk.FormatFeatureFlags) -> vk.Format {
+	for format, _ in candidates {
+		props: vk.FormatProperties
+		vk.GetPhysicalDeviceFormatProperties(vkc.physicalDevice, format, &props)
+		if (tiling == vk.ImageTiling.LINEAR && (props.linearTilingFeatures & features) == features) {
+			return format
+		} else if (tiling == vk.ImageTiling.OPTIMAL && (props.optimalTilingFeatures & features) == features) {
+			return format
+		}
+	}
+
+	panic("failed to find supported format!")
+}
+
+find_depth_format :: proc(vkc: ^VulkanContext) -> vk.Format {
+    return find_supported_format(vkc,
+    {vk.Format.D32_SFLOAT, vk.Format.D32_SFLOAT_S8_UINT, vk.Format.D24_UNORM_S8_UINT},
+        vk.ImageTiling.OPTIMAL,
+        vk.FormatFeatureFlags{.DEPTH_STENCIL_ATTACHMENT})
+}
+
+has_stencil_component :: proc(format: vk.Format) -> bool {
+    return format == vk.Format.D32_SFLOAT_S8_UINT || format == vk.Format.D24_UNORM_S8_UINT
+}
+
 
 find_memory_type :: proc(vkc:^VulkanContext, typeFilter:u32, properties: vk.MemoryPropertyFlags) -> (u32, bool) {
 	memProperties := vk.PhysicalDeviceMemoryProperties{}
@@ -211,8 +258,14 @@ find_memory_type :: proc(vkc:^VulkanContext, typeFilter:u32, properties: vk.Memo
 
 prepare_instance_data :: proc(vkc:^VulkanContext) -> bool {
 	instance_data := []InstanceData {
-		{{0.0, 0.0, 0.0}},
-		{{0.1, 0.1, 0.1}},
+		{
+			pos = {0.0, 0.0, 0.0},
+			rot = {0.0, lin.radians(f32(90)), 0.0},
+		},
+		{
+			pos = {0.1, 0.1, 0.1},
+			rot = {0.0, 0.0, 0.0},
+		},
 	}
 
 	bufferSize := vk.DeviceSize(size_of(InstanceData) * len(instance_data))
@@ -780,9 +833,17 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 		rasterizerDiscardEnable = false,
 		polygonMode = vk.PolygonMode.FILL,
 		lineWidth = 1.0,
-		cullMode = vk.CullModeFlags{.BACK},
+		// cullMode = vk.CullModeFlags{.BACK},
+		cullMode = vk.CullModeFlags{},
 		frontFace = vk.FrontFace.COUNTER_CLOCKWISE,
 		depthBiasEnable = false,
+	}
+
+	depthStencil := vk.PipelineDepthStencilStateCreateInfo {
+		sType = vk.StructureType.PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		depthTestEnable = true,
+		depthWriteEnable = true,
+		depthCompareOp = vk.CompareOp.LESS_OR_EQUAL,
 	}
 
 	multisampling := vk.PipelineMultisampleStateCreateInfo{
@@ -823,6 +884,7 @@ create_graphics_pipeline :: proc(vkc: ^VulkanContext) -> bool {
 		pInputAssemblyState = &inputAssembly,
 		pViewportState = &viewportState,
 		pRasterizationState = &rasterizer,
+		pDepthStencilState = &depthStencil,
 		pMultisampleState = &multisampling,
 		pColorBlendState = &colorBlending,
 		layout = vkc.pipelineLayout,
@@ -903,30 +965,48 @@ create_render_pass :: proc(vkc: ^VulkanContext) -> bool {
 		finalLayout = vk.ImageLayout.PRESENT_SRC_KHR,
 	}
 
+	depthAttachment := vk.AttachmentDescription{
+		format = find_depth_format(vkc),
+		samples = vk.SampleCountFlags{._1},
+		loadOp = vk.AttachmentLoadOp.CLEAR,
+		storeOp = vk.AttachmentStoreOp.DONT_CARE,
+		stencilLoadOp = vk.AttachmentLoadOp.DONT_CARE,
+		stencilStoreOp = vk.AttachmentStoreOp.DONT_CARE,
+		initialLayout = vk.ImageLayout.UNDEFINED,
+		finalLayout = vk.ImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	}
+
 	colorAttachmentRef := vk.AttachmentReference{
 		attachment = 0,
 		layout = vk.ImageLayout.COLOR_ATTACHMENT_OPTIMAL,
+	}
+
+	depthAttachmentRef := vk.AttachmentReference {
+		attachment = 1,
+		layout = vk.ImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	}
 
 	subpass := vk.SubpassDescription{
 		pipelineBindPoint = vk.PipelineBindPoint.GRAPHICS,
 		colorAttachmentCount = 1,
 		pColorAttachments = &colorAttachmentRef,
+		pDepthStencilAttachment = &depthAttachmentRef,
 	}
 
     dependency := vk.SubpassDependency {
         srcSubpass = vk.SUBPASS_EXTERNAL,
         dstSubpass = 0,
-        srcStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
+        srcStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT,.EARLY_FRAGMENT_TESTS},
         srcAccessMask = vk.AccessFlags{},
-        dstStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
-        dstAccessMask = vk.AccessFlags{.COLOR_ATTACHMENT_WRITE},
+        dstStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT,.EARLY_FRAGMENT_TESTS},
+        dstAccessMask = vk.AccessFlags{.COLOR_ATTACHMENT_WRITE,.DEPTH_STENCIL_ATTACHMENT_WRITE},
 	}
 
+	attachments := []vk.AttachmentDescription{colorAttachment, depthAttachment}
 	renderPassInfo := vk.RenderPassCreateInfo{
 		sType = vk.StructureType.RENDER_PASS_CREATE_INFO,
-		attachmentCount = 1,
-		pAttachments = &colorAttachment,
+		attachmentCount = auto_cast len(attachments),
+		pAttachments = mem.raw_slice_data(attachments),
 		subpassCount = 1,
 		pSubpasses = &subpass,
         dependencyCount = 1,
@@ -962,12 +1042,12 @@ create_framebuffers :: proc(vkc: ^VulkanContext) -> bool {
 	}
 
 	for sciv, i in vkc.swapChainImageViews {
-		attachments := []vk.ImageView{sciv}
+		attachments := []vk.ImageView{sciv, vkc.depthImageView}
 
 		framebufferInfo := vk.FramebufferCreateInfo{
 			sType = vk.StructureType.FRAMEBUFFER_CREATE_INFO,
 			renderPass = vkc.renderPass,
-			attachmentCount = 1,
+			attachmentCount = auto_cast len(attachments),
 			pAttachments = mem.raw_slice_data(attachments),
 			width = vkc.swapChainExtent.width,
 			height = vkc.swapChainExtent.height,
@@ -1015,7 +1095,7 @@ create_image_views :: proc(vkc: ^VulkanContext) -> bool {
 	}
 
 	for _, i in vkc.swapChainImageViews {
-		view, result := create_image_view(vkc, vkc.swapChainImages[i], vkc.swapChainImageFormat)
+		view, result := create_image_view(vkc, vkc.swapChainImages[i], vkc.swapChainImageFormat, vk.ImageAspectFlags{.COLOR})
 		if !result {
 			return false
 		}
@@ -1061,9 +1141,17 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 			return false
 		}
 
-		clearColor := vk.ClearValue{
-			color = {
-				float32 = {0.0, 0.0, 0.0, 1.0},
+		clearValues := []vk.ClearValue{
+			{
+				color = {
+					float32 = {0.0, 0.0, 0.0, 1.0},
+				},
+			},
+			{
+				depthStencil = {
+					depth = 1.0,
+					stencil = 0,
+				},
 			},
 		}
 
@@ -1075,8 +1163,8 @@ create_command_buffers :: proc(vkc: ^VulkanContext) -> bool {
 				offset = {0, 0},
 				extent = vkc.swapChainExtent,
 			},
-			clearValueCount = 1,
-			pClearValues = &clearColor,
+			clearValueCount = u32(len(clearValues)),
+			pClearValues = mem.raw_slice_data(clearValues),
 		}
 
 		vk.CmdBeginRenderPass(cb, &renderPassInfo, vk.SubpassContents.INLINE)
@@ -1243,14 +1331,14 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 
 sdl_pixelformat_rgba8888 := sdl.DEFINE_PIXELFORMAT(sdl.PIXELTYPE_PACKED32, sdl.PACKEDORDER_ABGR, sdl.PACKEDLAYOUT_8888, 32, 4)
 
-create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format) -> (vk.ImageView, bool) {
+create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format, aspect_flags: vk.ImageAspectFlags) -> (vk.ImageView, bool) {
  viewInfo := vk.ImageViewCreateInfo {
 		sType = vk.StructureType.IMAGE_VIEW_CREATE_INFO,
 		image = image,
 		viewType = vk.ImageViewType.D2,
 		format = format,
 		subresourceRange = {
-			aspectMask = vk.ImageAspectFlags{.COLOR},
+			aspectMask = aspect_flags, //vk.ImageAspectFlags{.COLOR},
 			baseMipLevel = 0,
 			levelCount = 1,
 			baseArrayLayer = 0,
@@ -1298,7 +1386,7 @@ create_texture_sampler :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 create_texture_image_view :: proc(vkc: ^VulkanContext) -> bool {
-	textureImageView, result := create_image_view(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB)
+	textureImageView, result := create_image_view(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB, vk.ImageAspectFlags{.COLOR})
 	vkc.textureImageView = textureImageView
 	return result
 }
@@ -1690,6 +1778,10 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 }
 
 cleanup_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
+    vk.DestroyImageView(vkc.device, vkc.depthImageView, nil)
+    vk.DestroyImage(vkc.device, vkc.depthImage, nil)
+    vk.FreeMemory(vkc.device, vkc.depthImageMemory, nil)
+
 	for framebuffer, _ in vkc.swapChainFramebuffers {
 		vk.DestroyFramebuffer(vkc.device, framebuffer, nil)
 	}
@@ -1740,6 +1832,10 @@ recreate_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	}
 	if !create_graphics_pipeline(vkc) {
 		log.debug("failed create_graphics_pipeline")
+		return false
+	}
+	if !create_depth_resources(vkc) {
+		log.debug("failed create_depth_resources")
 		return false
 	}
 	if !create_framebuffers(vkc) {
@@ -1920,6 +2016,11 @@ main :: proc() {
 
 	if !create_graphics_pipeline(&vkc) {
 		log.debug("Could not create graphics pipeline")
+		return
+	}
+
+	if !create_depth_resources(&vkc) {
+		log.debug("Could not create depth resources")
 		return
 	}
 
