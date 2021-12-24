@@ -7,4 +7,4 @@ for x in shaders/*.vert shaders/*.frag; do
   out="$(basename $x | sed 's/\./-/g').spv"
   glslc $x -o shaders/$out
 done
-odin build draw.odin -vet -debug
+../Odin/odin build draw.odin -vet -debug -extra-linker-flags:'/home/jim/projects/stb/libstb_image.a'

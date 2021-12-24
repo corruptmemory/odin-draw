@@ -4,17 +4,18 @@ import "core:mem"
 import rt "core:runtime"
 import "core:math/bits"
 import "core:os"
-import sdl "vendor:sdl2"
-import img "vendor:sdl2/image"
+import img "vendor:stb/image"
 import vk "vendor:vulkan"
-import vkx11 "x11/vulkan"
-import xlib "x11/xlib"
+import vkxcb "x11/vulkan"
+import xcb "x11/xcb"
 import lin "core:math/linalg/glsl"
 import time "core:time"
 import "core:thread"
 import "core:intrinsics"
 import "core:c"
+import "core:c/libc"
 import "core:log"
+import "core:strings"
 
 screen_width :: 640
 screen_height :: 480
@@ -23,6 +24,8 @@ API_VERSION_1_1 :: (1<<22) | (1<<12) | (0)
 
 VERTEX_BUFFER_BIND_ID :: 0
 INSTANCE_BUFFER_BIND_ID :: 1
+
+vulkan_lib: rawptr = nil
 
 UniformBufferObject :: struct {
 	model: lin.mat4,
@@ -73,13 +76,17 @@ VulkanContext :: struct {
 	descriptorPool: vk.DescriptorPool,
 	descriptorSets: []vk.DescriptorSet,
 	currentFrame: int,
-	window: ^sdl.Window,
+	connection: ^xcb.Connection,
+	screen: ^xcb.Screen,
+	window: xcb.Window,
+	atom_wm_delete_window: ^xcb.InternAtomReply,
 	framebufferResized: bool,
 	startTime: time.Time,
 	textureImage: vk.Image,
 	textureImageMemory: vk.DeviceMemory,
 	textureImageView: vk.ImageView,
 	textureSampler: vk.Sampler,
+	library_handle: rawptr,
 	width: u32,
 	height: u32,
 	exit: bool,
@@ -109,8 +116,7 @@ indices :: []u16 {0,1,2,2,3,0}
 
 extensions :: []cstring {
 	vk.KHR_SURFACE_EXTENSION_NAME,
-	vkx11.KHR_XLIB_SURFACE_EXTENSION_NAME,
-	vkx11.KHR_XCB_SURFACE_EXTENSION_NAME,
+	vkxcb.KHR_XCB_SURFACE_EXTENSION_NAME,
 	vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
 	vk.KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
 }
@@ -570,25 +576,22 @@ create_logical_device :: proc(vkc: ^VulkanContext) -> bool {
 }
 
 
-create_surface :: proc(vkc: ^VulkanContext, sdlWindow: ^sdl.Window) -> bool {
-	surface: vk.SurfaceKHR
-	createInfo : vkx11.XlibSurfaceCreateInfoKHR
-	createInfo.sType = vk.StructureType.XLIB_SURFACE_CREATE_INFO_KHR
-	info : sdl.SysWMinfo
-	sdl.GetVersion(&info.version)
-	if sdl.GetWindowWMInfo(sdlWindow, &info) == false {
-		log.debug("Could not get window info.")
-		return false
+create_surface :: proc(vkc: ^VulkanContext) -> bool {
+ 	surface: vk.SurfaceKHR
+
+	// Create the os-specific surface
+	 surfaceCreateInfo := vkxcb.XcbSurfaceCreateInfoKHR{
+	 	sType = vk.StructureType.XCB_SURFACE_CREATE_INFO_KHR,
+		connection = vkc.connection,
+		window = vkc.window,
+	 }
+
+	if vkxcb.create_xcb_surface_khr(vkc.instance, &surfaceCreateInfo, nil, &surface) != vk.Result.SUCCESS {
+		panic("Could not create XCB surface!")
 	}
-	log.debug("WOOT!  Got Window info: ", info)
-	createInfo.dpy = (^xlib.Display)(info.info.x11.display)
-	createInfo.window = xlib.Window(info.info.x11.window)
-	result := vkx11.CreateXlibSurfaceKHR(vkc.instance, &createInfo, nil, &surface)
-	if result != vk.Result.SUCCESS {
-		log.debug("Failed to create surface: ", result)
-		return false
-	}
+
 	vkc.surface = surface
+
 	return true
 }
 
@@ -663,7 +666,7 @@ choose_swap_present_mode :: proc(availablePresentModes: []vk.PresentModeKHR) -> 
 	return vk.PresentModeKHR.FIFO
 }
 
-choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR, window:^sdl.Window, width, height: u32) -> vk.Extent2D {
+choose_swap_extent :: proc(capabilities: ^vk.SurfaceCapabilitiesKHR, width, height: u32) -> vk.Extent2D {
 	if capabilities.currentExtent.width != bits.U32_MAX {
 	    return capabilities.currentExtent
 	} else {
@@ -682,7 +685,7 @@ create_swap_chain :: proc(vkc: ^VulkanContext) -> bool {
 	if vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.physicalDevice, vkc.surface, &vkc.capabilities) != vk.Result.SUCCESS {
 		return false
 	}
-	extent := choose_swap_extent(&vkc.capabilities, vkc.window, vkc.width, vkc.height)
+	extent := choose_swap_extent(&vkc.capabilities, vkc.width, vkc.height)
 
 	imageCount := vkc.capabilities.minImageCount + 1
 	if vkc.capabilities.maxImageCount > 0 && imageCount > vkc.capabilities.maxImageCount {
@@ -1329,7 +1332,7 @@ create_descriptor_sets :: proc(vkc: ^VulkanContext) -> bool {
 	return true
 }
 
-sdl_pixelformat_rgba8888 := sdl.DEFINE_PIXELFORMAT(sdl.PIXELTYPE_PACKED32, sdl.PACKEDORDER_ABGR, sdl.PACKEDLAYOUT_8888, 32, 4)
+// sdl_pixelformat_rgba8888 := sdl.DEFINE_PIXELFORMAT(sdl.PIXELTYPE_PACKED32, sdl.PACKEDORDER_ABGR, sdl.PACKEDLAYOUT_8888, 32, 4)
 
 create_image_view :: proc(vkc: ^VulkanContext, image: vk.Image, format: vk.Format, aspect_flags: vk.ImageAspectFlags) -> (vk.ImageView, bool) {
  viewInfo := vk.ImageViewCreateInfo {
@@ -1391,62 +1394,16 @@ create_texture_image_view :: proc(vkc: ^VulkanContext) -> bool {
 	return result
 }
 
-render_image :: proc(surface: ^sdl.Surface) {
-	window := sdl.CreateWindow("SDL2 Displaying Image",
-		sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, surface.w, surface.h, sdl.WindowFlags{})
-	defer sdl.DestroyWindow(window)
-
-	renderer := sdl.CreateRenderer(window, -1, sdl.RendererFlags{})
-	defer sdl.DestroyRenderer(renderer)
-
-	texture := sdl.CreateTextureFromSurface(renderer, surface)
-	defer sdl.DestroyTexture(texture)
-
-	sdl.RenderCopy(renderer, texture, nil, nil)
-	sdl.RenderPresent(renderer)
-
-	event: sdl.Event
-	stop:
-	for {
-		for sdl.WaitEvent(&event) != 0 {
-			#partial switch event.type {
-			case sdl.EventType.QUIT:
-				break stop
-			case sdl.EventType.WINDOWEVENT:
-				#partial switch event.window.event {
-					case sdl.WindowEventID.CLOSE:
-						break stop
-					case:
-				}
-			}
-		}
-	}
-}
-
 create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
-	origImageSurface := img.Load("textures/texture.jpg")
+	w, h, channels: c.int
+	origImageSurface := img.load("textures/texture.jpg", &w, &h, &channels, 4)
 	if origImageSurface == nil {
 		log.debug("Error loading texture image")
 		return false
 	}
-	defer sdl.FreeSurface(origImageSurface)
-	texWidth := origImageSurface.w
-	texHeight := origImageSurface.h
-	targetSurface := sdl.CreateRGBSurfaceWithFormat(0, origImageSurface.w, origImageSurface.h, 32, sdl_pixelformat_rgba8888)
-	defer sdl.FreeSurface(targetSurface)
-	rect := sdl.Rect {
-		x = 0,
-		y = 0,
-		w = origImageSurface.w,
-		h = origImageSurface.h,
-	}
-	err := sdl.UpperBlit(origImageSurface,&rect,targetSurface,&rect)
-	if err != 0 {
-		log.debugf("Error blitting texture image to target surface: %d", err)
-		return false
-	}
-	// render_image(targetSurface)
-	imageSize : vk.DeviceSize = vk.DeviceSize(texWidth * texHeight * 4)
+
+	defer img.image_free(origImageSurface)
+	imageSize : vk.DeviceSize = vk.DeviceSize(w * h * 4)
 	stagingBuffer : vk.Buffer
 	stagingBufferMemory : vk.DeviceMemory
 
@@ -1458,12 +1415,10 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 
 	data: rawptr
 	vk.MapMemory(vkc.device, stagingBufferMemory, 0, imageSize, vk.MemoryMapFlags{}, &data)
-	sdl.LockSurface(targetSurface)
-	rt.mem_copy_non_overlapping(data, targetSurface.pixels, int(imageSize))
-	sdl.UnlockSurface(targetSurface)
+	rt.mem_copy_non_overlapping(data, origImageSurface, int(imageSize))
 	vk.UnmapMemory(vkc.device, stagingBufferMemory)
 
-	if !create_image(vkc, u32(texWidth), u32(texHeight), vk.Format.R8G8B8A8_SRGB,vk.ImageTiling.OPTIMAL, vk.ImageUsageFlags{.TRANSFER_DST, .SAMPLED}, vk.MemoryPropertyFlags{.DEVICE_LOCAL}, &vkc.textureImage, &vkc.textureImageMemory) {
+	if !create_image(vkc, u32(w), u32(h), vk.Format.R8G8B8A8_SRGB,vk.ImageTiling.OPTIMAL, vk.ImageUsageFlags{.TRANSFER_DST, .SAMPLED}, vk.MemoryPropertyFlags{.DEVICE_LOCAL}, &vkc.textureImage, &vkc.textureImageMemory) {
 		log.debug("Error: could not create image")
 		return false
 	}
@@ -1471,7 +1426,7 @@ create_texture_image :: proc(vkc: ^VulkanContext) -> bool {
 	if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB, vk.ImageLayout.UNDEFINED, vk.ImageLayout.TRANSFER_DST_OPTIMAL) {
 		return false
 	}
-	copy_buffer_to_image(vkc, stagingBuffer, vkc.textureImage, u32(texWidth), u32(texHeight))
+	copy_buffer_to_image(vkc, stagingBuffer, vkc.textureImage, u32(w), u32(h))
 	if !transition_image_layout(vkc, vkc.textureImage, vk.Format.R8G8B8A8_SRGB, vk.ImageLayout.TRANSFER_DST_OPTIMAL, vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL) {
 		return false
 	}
@@ -1701,7 +1656,7 @@ update_uniform_buffer :: proc(vkc: ^VulkanContext, currentImage: u32, scale: f32
 	vk.UnmapMemory(vkc.device,vkc.uniformBuffersMemory[currentImage])
 }
 
-draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
+draw_frame :: proc(vkc: ^VulkanContext) -> bool {
 	vk.WaitForFences(vkc.device, 1, &vkc.inFlightFences[vkc.currentFrame], true, bits.U64_MAX)
 
 	imageIndex: u32
@@ -1714,12 +1669,22 @@ draw_frame :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> bool {
 			return false
 	}
 
-	mx, my : c.int
-	dm : sdl.DisplayMode
-	didx := sdl.GetWindowDisplayIndex(window)
-	sdl.GetCurrentDisplayMode(didx, &dm)
-	sdl.GetGlobalMouseState(&mx, &my)
-	scale := f32(mx)/f32(dm.w)
+	err: ^xcb.GenericError
+	pointer := xcb.query_pointer_reply(vkc.connection,xcb.query_pointer(vkc.connection, vkc.window), &err)
+	if err != nil {
+		libc.free(err)
+		log.error("Could not get pointer location")
+		return false
+	}
+	defer libc.free(pointer)
+	geometry := xcb.get_geometry_reply(vkc.connection, xcb.get_geometry(vkc.connection, pointer.root), &err)
+	if err != nil {
+		libc.free(err)
+		log.error("Could not get the geometry of the root window")
+		return false
+	}
+	defer libc.free(geometry)
+	scale := f32(pointer.rootX)/f32(geometry.width)
 
 	update_uniform_buffer(vkc, imageIndex, scale)
 
@@ -1871,30 +1836,28 @@ load_vulkan_proc :: proc(p: rawptr, name: cstring) {
 
 Thread_Data :: struct {
 	ctx: ^VulkanContext,
-	window: ^sdl.Window,
 }
 
 draw_thread :: proc(t: ^thread.Thread) {
 	data := (^Thread_Data)(t.data)
 	ctx := data.ctx
-	window := data.window
+	// window := ctx.window
 
 	exit := intrinsics.atomic_load(&ctx.exit)
 	for !exit {
-		if !draw_frame(ctx, window) {
+		if !draw_frame(ctx) {
 			log.debug("Could not draw frame")
 			return
 		}
-		sdl.UpdateWindowSurface(window)
+		// sdl.UpdateWindowSurface(window)
 		time.sleep(16 * time.Millisecond)
 		exit = intrinsics.atomic_load(&ctx.exit)
 	}
 }
 
-start_draw_thread :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> ^thread.Thread {
+start_draw_thread :: proc(vkc: ^VulkanContext) -> ^thread.Thread {
 	data := new(Thread_Data)
 	data.ctx = vkc
-	data.window = window
 	t := thread.create(draw_thread)
 	t.id = 1
 	t.data = data
@@ -1902,30 +1865,156 @@ start_draw_thread :: proc(vkc: ^VulkanContext, window: ^sdl.Window) -> ^thread.T
 	return t
 }
 
+setup_connection :: proc(vkc: ^VulkanContext) {
+	scr: c.int
+
+	// xcb_connect always returns a non-NULL pointer to a xcb_connection_t,
+	// even on failure. Callers need to use xcb_connection_has_error() to
+	// check for failure. When finished, use xcb_disconnect() to close the
+	// connection and free the structure.
+	vkc.connection = xcb.connect(nil, &scr)
+	assert(vkc.connection != nil)
+	if xcb.connection_has_error(vkc.connection) != 0 {
+		panic("Could not find a compatible Vulkan ICD!")
+	}
+
+	setup := xcb.get_setup(vkc.connection)
+	iter := xcb.setup_roots_iterator(setup)
+	// for ;scr > 0; scr -= 1 {
+	// 	xcb.screen_next(&iter)
+	// }
+	vkc.screen = iter.data
+}
+
+intern_atom_helper :: proc(conn: ^xcb.Connection, only_if_exists: bool, str: string) -> ^xcb.InternAtomReply {
+	cstr := strings.clone_to_cstring(str)
+	defer delete(cstr)
+	cookie := xcb.intern_atom(conn, u8(only_if_exists), auto_cast len(str), cstr)
+	err: ^xcb.GenericError
+	r := xcb.intern_atom_reply(conn, cookie, &err)
+	if err != nil {
+		log.panicf("Error interning symbol: %v", err)
+	}
+	return r
+}
+
+
+setup_window :: proc(vkc: ^VulkanContext, title: string, name: string) {
+	// value_mask := xcb.CwFlags{.BackPixel, .EventMask}
+	value_mask := xcb.CwFlags{.EventMask}
+	value_list: [32]u32
+
+	vkc.window = xcb.generate_id(vkc.connection)
+
+	log.debugf("vkc.window: %v", vkc.window)
+
+	eventFlags := xcb.EventMaskFlags{.KeyRelease, .KeyPress, .Exposure, .StructureNotify, .PointerMotion, .ButtonPress, .ButtonRelease}
+	// value_list[0] = vkc.screen.blackPixel
+	value_list[0] = transmute(u32)(eventFlags)
+
+	log.debugf("value_list: %v", value_list)
+
+	xcb.create_window(vkc.connection,
+		xcb.COPY_FROM_PARENT,
+		vkc.window,
+		vkc.screen.root,
+		0,
+		0,
+		640,
+		480,
+		0,
+		xcb.WindowClass.InputOutput,
+		vkc.screen.rootVisual,
+		value_mask,
+		mem.raw_slice_data(value_list[:]))
+
+	/* Magic code that will send notification when window is destroyed */
+	reply := intern_atom_helper(vkc.connection, true, "WM_PROTOCOLS")
+	vkc.atom_wm_delete_window = intern_atom_helper(vkc.connection, false, "WM_DELETE_WINDOW")
+
+	xcb.change_property(vkc.connection,
+		auto_cast xcb.PropMode.Replace,
+		vkc.window,
+		reply.atom,
+		4,
+		32,
+		1,
+		&vkc.atom_wm_delete_window.atom)
+
+	window_title := strings.clone_to_cstring(title)
+	defer delete(window_title)
+	xcb.change_property(vkc.connection,
+		auto_cast xcb.PropMode.Replace,
+		vkc.window,
+		auto_cast xcb.AtomEnum.AtomWmName,
+		auto_cast xcb.AtomEnum.AtomString,
+		8,
+		auto_cast len(title),
+		auto_cast window_title)
+
+	libc.free(reply)
+
+
+	cname := strings.clone_to_cstring(name)
+	defer delete(cname)
+	/**
+	 * Set the WM_CLASS property to display
+	 * title in dash tooltip and application menu
+	 * on GNOME and other desktop environments
+	 */
+	wm_class: strings.Builder
+	strings.init_builder(&wm_class, len(name) + len(title) + 2)
+	defer strings.destroy_builder(&wm_class)
+	strings.write_string(&wm_class, name)
+	strings.write_byte(&wm_class, 0)
+	strings.write_string(&wm_class, title)
+	strings.write_byte(&wm_class, 0)
+	cwm_class := strings.unsafe_string_to_cstring(strings.to_string(wm_class))
+	xcb.change_property(vkc.connection,
+		auto_cast xcb.PropMode.Replace,
+		vkc.window,
+		auto_cast xcb.AtomEnum.AtomWmClass,
+		auto_cast xcb.AtomEnum.AtomString,
+		8,
+		u32(strings.builder_len(wm_class)),
+		auto_cast cwm_class)
+
+	vkc.width = 640
+	vkc.height = 480
+
+	xcb.map_window(vkc.connection, vkc.window)
+	xcb.flush(vkc.connection)
+}
+
+set_proc_address :: proc(p: rawptr, name: cstring) {
+	(^rawptr)(p)^ = os._unix_dlsym(vulkan_lib, name)
+}
+
+load_vulkan :: proc() {
+	vulkan_lib = os.dlopen("libvulkan.so", os.RTLD_LAZY)
+	if vulkan_lib == nil {
+		log.panicf("Could not load libvulkan: %s", os.dlerror())
+	}
+
+	vk.load_proc_addresses(set_proc_address)
+}
+
+unload_vulkan :: proc() {
+	os.dlclose(vulkan_lib)
+}
+
 main :: proc() {
 	context.logger = log.create_console_logger()
 	vkc : VulkanContext
-	if sdl.Init(sdl.INIT_EVERYTHING) < 0 {
-		log.debugf("failed to initialize sdl", sdl.GetError())
-		return
-	}
-	defer sdl.Quit()
-	if sdl.Vulkan_LoadLibrary(nil) < 0 {
-		log.debugf("failed to load Vulkan", sdl.GetError())
-		return
-	}
-	defer sdl.Vulkan_UnloadLibrary()
+	setup_connection(&vkc)
 
-	vuklan_proc_address_loader = vk.ProcGetInstanceProcAddr(sdl.Vulkan_GetVkGetInstanceProcAddr())
-
-	vk.load_proc_addresses(load_vulkan_proc)
+	load_vulkan()
+	defer unload_vulkan()
 
 	vkc.startTime = time.now()
 	vkc.enableValidationLayers = true
 	create_instance(&vkc)
 	loader_instance = vkc.instance
-
-	vk.load_proc_addresses(load_vulkan_proc)
 
 	log.debug(" pick_physical_device(&vkc);")
 	ok := pick_physical_device(&vkc)
@@ -1939,24 +2028,10 @@ main :: proc() {
 		return
 	}
 
-	window := sdl.CreateWindow(
-		"hello_sdl2",
-		cast(i32)sdl.WINDOWPOS_UNDEFINED, cast(i32)sdl.WINDOWPOS_UNDEFINED,
-		screen_width, screen_height,
-		sdl.WindowFlags{.SHOWN, .VULKAN,.RESIZABLE})
-	if window == nil {
-		log.debugf("could not create window: {}", sdl.GetError())
-		return
-	}
-	vkc.window = window
-	width, height: i32
-	sdl.GetWindowSize(vkc.window,&width,&height)
-	vkc.width = u32(width)
-	vkc.height = u32(height)
-	defer sdl.DestroyWindow(window)
+	setup_window(&vkc, "title", "name")
 
 	log.debug("create_surface(&vkc, window);")
-	ok = create_surface(&vkc, window)
+	ok = create_surface(&vkc)
 	if !ok {
 		log.debug("Could not create Vulkan surface.")
 		return
@@ -2081,26 +2156,29 @@ main :: proc() {
 
 	defer cleanup(&vkc)
 
-	dthread := start_draw_thread(&vkc, window)
+	dthread := start_draw_thread(&vkc)
 
-	event: sdl.Event
-	stop:
-	for {
-		for sdl.PollEvent(&event) != 0 {
-			#partial switch event.type {
-			case sdl.EventType.QUIT:
-				intrinsics.atomic_store(&vkc.exit, true)
-				break stop
-			case sdl.EventType.WINDOWEVENT:
-				#partial switch event.window.event {
-				case sdl.WindowEventID.RESIZED:
-				case sdl.WindowEventID.EXPOSED:
-				case sdl.WindowEventID.SHOWN:
+	event: ^xcb.GenericEvent = nil
+	quit := false
+
+	for event = xcb.poll_for_event(vkc.connection);!quit;event = xcb.poll_for_event(vkc.connection) {
+		if event != nil {
+			switch (event.responseType & 0x7f) {
+			case xcb.CLIENT_MESSAGE:
+				if (^xcb.ClientMessageEvent)(event).data.data32[0] == vkc.atom_wm_delete_window.atom {
+					intrinsics.atomic_store(&vkc.exit, true)
+					quit = true
 				}
+			case xcb.DESTROY_NOTIFY:
+				quit = true
+				intrinsics.atomic_store(&vkc.exit, true)
 			case:
+				// nothing
 			}
+			libc.free(event)
 		}
 	}
-
+	log.debug("Quit, waiting...")
 	thread.join(dthread)
+	log.debug("Done")
 }
