@@ -2,6 +2,8 @@ package xcb
 
 import _c "core:c"
 
+Flags         :: distinct u32
+
 XCB_H__ :: 1
 PACKED :: 1
 X_PROTOCOL :: 11
@@ -244,33 +246,33 @@ VisualClass :: enum i32 {
     DirectColor = 5,
 }
 
-EventMask :: enum i32 {
-    NoEvent = 0,
-    KeyPress = 1,
-    KeyRelease = 2,
-    ButtonPress = 4,
-    ButtonRelease = 8,
-    EnterWindow = 16,
-    LeaveWindow = 32,
-    PointerMotion = 64,
-    PointerMotionHint = 128,
-    Button1_motion = 256,
-    Button2_motion = 512,
-    Button3_motion = 1024,
-    Button4_motion = 2048,
-    Button5_motion = 4096,
-    ButtonMotion = 8192,
-    KeymapState = 16384,
-    Exposure = 32768,
-    VisibilityChange = 65536,
-    StructureNotify = 131072,
-    ResizeRedirect = 262144,
-    SubstructureNotify = 524288,
-    SubstructureRedirect = 1048576,
-    FocusChange = 2097152,
-    PropertyChange = 4194304,
-    ColorMapChange = 8388608,
-    OwnerGrabButton = 16777216,
+EventMaskFlags :: distinct bit_set[EventMask; Flags]
+EventMask :: enum {
+    KeyPress             = 0,
+    KeyRelease           = 1,
+    ButtonPress          = 2,
+    ButtonRelease        = 3,
+    EnterWindow          = 4,
+    LeaveWindow          = 5,
+    PointerMotion        = 6,
+    PointerMotionHint    = 7,
+    Button1_motion       = 8,
+    Button2_motion       = 9,
+    Button3_motion       = 10,
+    Button4_motion       = 11,
+    Button5_motion       = 12,
+    ButtonMotion         = 13,
+    KeymapState          = 14,
+    Exposure             = 15,
+    VisibilityChange     = 16,
+    StructureNotify      = 17,
+    ResizeRedirect       = 18,
+    SubstructureNotify   = 19,
+    SubstructureRedirect = 20,
+    FocusChange          = 21,
+    PropertyChange       = 22,
+    ColorMapChange       = 23,
+    OwnerGrabButton      = 24,
 }
 
 BackingStore :: enum i32 {
@@ -368,7 +370,7 @@ Time :: enum i32 {
     CurrentTime = 0,
 }
 
-AtomEnum :: enum i32 {
+AtomEnum :: enum u32 {
     AtomNone = 0,
     AtomAny = 0,
     AtomPrimary = 1,
@@ -456,28 +458,29 @@ Mapping :: enum i32 {
     Pointer = 2,
 }
 
-WindowClass :: enum i32 {
+WindowClass :: enum u16 {
     CopyFromParent = 0,
     InputOutput = 1,
     InputOnly = 2,
 }
 
-Cw :: enum i32 {
-    BackPixmap = 1,
-    BackPixel = 2,
-    BorderPixmap = 4,
-    BorderPixel = 8,
-    BitGravity = 16,
-    WinGravity = 32,
-    BackingStore = 64,
-    BackingPlanes = 128,
-    BackingPixel = 256,
-    OverrideRedirect = 512,
-    SaveUnder = 1024,
-    EventMask = 2048,
-    DontPropagate = 4096,
-    Colormap = 8192,
-    Cursor = 16384,
+CwFlags :: distinct bit_set[Cw; Flags]
+Cw :: enum {
+    BackPixmap       = 0,
+    BackPixel        = 1,
+    BorderPixmap     = 2,
+    BorderPixel      = 3,
+    BitGravity       = 4,
+    WinGravity       = 5,
+    BackingStore     = 6,
+    BackingPlanes    = 7,
+    BackingPixel     = 8,
+    OverrideRedirect = 9,
+    SaveUnder        = 10,
+    EventMask        = 11,
+    DontPropagate    = 12,
+    Colormap         = 13,
+    Cursor           = 14,
 }
 
 BackPixmap :: enum i32 {
@@ -534,7 +537,7 @@ Circulate :: enum i32 {
     LowerHighest = 1,
 }
 
-PropMode :: enum i32 {
+PropMode :: enum u8 {
     Replace = 0,
     Prepend = 1,
     Append = 2,
@@ -3827,9 +3830,9 @@ foreign x11_xcb {
         width : u16,
         height : u16,
         borderWidth : u16,
-        class : u16,
+        class : WindowClass,
         visual : Visualid,
-        valueMask : u32,
+        valueMask : CwFlags,
         valueList : rawptr,
     ) -> VoidCookie ---
 
