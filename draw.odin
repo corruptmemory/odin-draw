@@ -40,7 +40,7 @@ FrameBufferAttachment :: struct {
 };
 
 FrameBuffer :: struct {
-	framebuffer: VkFramebuffer,
+	framebuffer: vk.Framebuffer,
 	color, depth: FrameBufferAttachment,
 	descriptor: vk.DescriptorImageInfo,
 }
@@ -96,6 +96,7 @@ VulkanContext :: struct {
 	currentFrame: int,
 	connection: ^xcb.Connection,
 	screen: ^xcb.Screen,
+	offscreen: OffScreen,
 	window: xcb.Window,
 	atom_wm_delete_window: ^xcb.InternAtomReply,
 	framebufferResized: bool,
@@ -441,7 +442,7 @@ copy_buffer :: proc(vkc: ^VulkanContext, srcBuffer: vk.Buffer, dstBuffer: vk.Buf
 prepare_offscreen_framebuffer :: proc(vkc: ^VulkanContext, frame_buf: ^FrameBuffer, width, height: u32, color_format: vk.Format, depth_format: vk.Format) -> bool {
 	// Color attachment
 	image := vk.ImageCreateInfo {
-		sType = vk.StructureType.ImageCreateInfo,
+		sType = vk.StructureType.IMAGE_CREATE_INFO,
 		imageType = vk.ImageType.D2,
 		extent = {
 			width = width,
@@ -452,12 +453,12 @@ prepare_offscreen_framebuffer :: proc(vkc: ^VulkanContext, frame_buf: ^FrameBuff
 		mipLevels = 1,
 		arrayLayers = 1,
 		tiling = vk.ImageTiling.OPTIMAL,
-		usage = vk.ImageUsage{.COLOR_ATTACHMENT,.SAMPLED_BIT},
+		usage = vk.ImageUsageFlags{.COLOR_ATTACHMENT, .SAMPLED},
 		samples = vk.SampleCountFlags{._1},
 	}
 
-	mem_alloc := VkMemoryAllocateInfo {
-		sType = vk.StructureType.MemoryAllocateInfo,
+	mem_alloc := vk.MemoryAllocateInfo {
+		sType = vk.StructureType.MEMORY_ALLOCATE_INFO,
 	}
 	mem_reqs: vk.MemoryRequirements
 
@@ -466,7 +467,7 @@ prepare_offscreen_framebuffer :: proc(vkc: ^VulkanContext, frame_buf: ^FrameBuff
 		viewType = vk.ImageViewType.D2,
 		format = color_format,
 		subresourceRange = {
-			aspectMask = vk.ImageAspect{.COLOR},
+			aspectMask = vk.ImageAspectFlags{.COLOR},
 			baseMipLevel = 0,
 			levelCount = 1,
 			baseArrayLayer = 0,
@@ -477,63 +478,93 @@ prepare_offscreen_framebuffer :: proc(vkc: ^VulkanContext, frame_buf: ^FrameBuff
 		log.error("Could not create image for offscreen rendering")
 		return false
 	}
+	ok: bool
 	vk.GetImageMemoryRequirements(vkc.device, frame_buf.color.image, &mem_reqs)
 	mem_alloc.allocationSize = mem_reqs.size
-	mem_alloc.memoryTypeIndex = vulkanDevice->getMemoryType(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	mem_alloc.memoryTypeIndex, ok = find_memory_type(vkc, mem_reqs.memoryTypeBits, vk.MemoryPropertyFlags{.DEVICE_LOCAL})
+	if !ok {
+		log.error("Could not find the memory we were looking for")
+		return false
+	}
 	if vk.AllocateMemory(vkc.device, &mem_alloc, nil, &frame_buf.color.mem) != vk.Result.SUCCESS {
 		log.error("Could not allocate memory for offscreen rendering")
 		return false
 	}
 	if vk.BindImageMemory(vkc.device, frame_buf.color.image, frame_buf.color.mem, 0) != vk.Result.SUCCESS {
 		log.error("Could not bind memory for offscreen rendering")
+		return false
 	}
 
-	colorImageView.image = frame_buf->color.image;
-	VK_CHECK_RESULT(vkCreateImageView(device, &colorImageView, nullptr, &frame_buf->color.view));
+	color_image_view.image = frame_buf.color.image
+	if vk.CreateImageView(vkc.device, &color_image_view, nil, &frame_buf.color.view) != vk.Result.SUCCESS {
+		log.error("Could not create color image view")
+		return false
+	}
 
 	// Depth stencil attachment
-	image.format = depthFormat;
-	image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	image.format = depth_format
+	image.usage = vk.ImageUsageFlags{.DEPTH_STENCIL_ATTACHMENT}
 
-	VkImageViewCreateInfo depthStencilView = vks::initializers::imageViewCreateInfo();
-	depthStencilView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	depthStencilView.format = depthFormat;
-	depthStencilView.flags = 0;
-	depthStencilView.subresourceRange = {};
-	depthStencilView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-	depthStencilView.subresourceRange.baseMipLevel = 0;
-	depthStencilView.subresourceRange.levelCount = 1;
-	depthStencilView.subresourceRange.baseArrayLayer = 0;
-	depthStencilView.subresourceRange.layerCount = 1;
+	depth_stencil_view := vk.ImageViewCreateInfo {
+		sType = vk.StructureType.IMAGE_VIEW_CREATE_INFO,
+		viewType = vk.ImageViewType.D2,
+		format = depth_format,
+		flags = vk.ImageViewCreateFlags{},
+		subresourceRange = {
+			aspectMask = vk.ImageAspectFlags{.DEPTH,.STENCIL},
+			baseMipLevel = 0,
+			levelCount = 1,
+			baseArrayLayer = 0,
+			layerCount = 1,
+		},
+	}
 
-	VK_CHECK_RESULT(vkCreateImage(device, &image, nullptr, &frame_buf->depth.image));
-	vkGetImageMemoryRequirements(device, frame_buf->depth.image, &mem_reqs);
-	mem_alloc.allocationSize = memReqs.size;
-	mem_alloc.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	VK_CHECK_RESULT(vkAllocateMemory(device, &memAlloc, nullptr, &frame_buf->depth.mem));
-	VK_CHECK_RESULT(vkBindImageMemory(device, frame_buf->depth.image, frame_buf->depth.mem, 0));
+	if vk.CreateImage(vkc.device, &image, nil, &frame_buf.depth.image) != vk.Result.SUCCESS {
+		log.error("Could not create depth image view")
+		return false
+	}
 
-	depthStencilView.image = frameBuf->depth.image;
-	VK_CHECK_RESULT(vkCreateImageView(device, &depthStencilView, nullptr, &frameBuf->depth.view));
+	vk.GetImageMemoryRequirements(vkc.device, frame_buf.depth.image, &mem_reqs)
+	mem_alloc.allocationSize = mem_reqs.size
+	mem_alloc.memoryTypeIndex, ok = find_memory_type(vkc, mem_reqs.memoryTypeBits, vk.MemoryPropertyFlags{.DEVICE_LOCAL})
+	if !ok {
+		log.error("Error: we could not find the memory we were looking for")
+		return false
+	}
+	vk.AllocateMemory(vkc.device, &mem_alloc, nil, &frame_buf.depth.mem)
+	vk.BindImageMemory(vkc.device, frame_buf.depth.image, frame_buf.depth.mem, 0)
 
-	VkImageView attachments[2];
-	attachments[0] = frameBuf->color.view;
-	attachments[1] = frameBuf->depth.view;
+	depth_stencil_view.image = frame_buf.depth.image
+	if vk.CreateImageView(vkc.device, &depth_stencil_view, nil, &frame_buf.depth.view) != vk.Result.SUCCESS {
+		log.error("Could not create stencil depth view")
+		return false
+	}
 
-	VkFramebufferCreateInfo fbufCreateInfo = vks::initializers::framebufferCreateInfo();
-	fbufCreateInfo.renderPass = offscreenPass.renderPass;
-	fbufCreateInfo.attachmentCount = 2;
-	fbufCreateInfo.pAttachments = attachments;
-	fbufCreateInfo.width = FB_DIM;
-	fbufCreateInfo.height = FB_DIM;
-	fbufCreateInfo.layers = 1;
+	attachments: [2]vk.ImageView
+	attachments[0] = frame_buf.color.view
+	attachments[1] = frame_buf.depth.view
 
-	VK_CHECK_RESULT(vkCreateFramebuffer(device, &fbufCreateInfo, nullptr, &frameBuf->framebuffer));
+	fbuf_create_info := vk.FramebufferCreateInfo {
+		sType = vk.StructureType.FRAMEBUFFER_CREATE_INFO,
+		renderPass = vkc.offscreen.renderPass,
+		attachmentCount = 2,
+		pAttachments = mem.raw_slice_data(attachments[:]),
+		width = 640,
+		height = 480,
+		layers = 1,
+	}
+
+	if vk.CreateFramebuffer(vkc.device, &fbuf_create_info, nil, &frame_buf.framebuffer) != vk.Result.SUCCESS {
+		log.error("We could not create the ultimate framebuffer to end all framebuffers")
+		return false
+	}
 
 	// Fill a descriptor for later use in a descriptor set
-	frameBuf->descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	frameBuf->descriptor.imageView = frameBuf->color.view;
-	frameBuf->descriptor.sampler = offscreenPass.sampler;
+	frame_buf.descriptor.imageLayout = vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL
+	frame_buf.descriptor.imageView = frame_buf.color.view
+	frame_buf.descriptor.sampler = vkc.offscreen.sampler
+
+	return true
 }
 
 
