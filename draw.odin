@@ -568,6 +568,114 @@ prepare_offscreen_framebuffer :: proc(vkc: ^VulkanContext, frame_buf: ^FrameBuff
 }
 
 
+prepare_offscreen :: proc(vkc: ^VulkanContext) -> bool {
+	// Find a suitable depth format
+	fb_depth_format := find_depth_format(vkc)
+
+	// Create a separate render pass for the offscreen rendering as it may differ from the one used for scene rendering
+
+	attchment_descriptions := []vk.AttachmentDescription{
+		{
+			format = vk.Format.R8G8B8A8_UNORM,
+			samples = vk.SampleCountFlags{._1},
+			loadOp = vk.AttachmentLoadOp.CLEAR,
+			storeOp = vk.AttachmentStoreOp.STORE,
+			stencilLoadOp = vk.AttachmentLoadOp.DONT_CARE,
+			stencilStoreOp = vk.AttachmentStoreOp.DONT_CARE,
+			initialLayout = vk.ImageLayout.UNDEFINED,
+			finalLayout = vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL,
+		},
+		{
+			format = fb_depth_format,
+			samples = vk.SampleCountFlags{._1},
+			loadOp = vk.AttachmentLoadOp.CLEAR,
+			storeOp = vk.AttachmentStoreOp.DONT_CARE,
+			stencilLoadOp = vk.AttachmentLoadOp.DONT_CARE,
+			stencilStoreOp = vk.AttachmentStoreOp.DONT_CARE,
+			initialLayout = vk.ImageLayout.UNDEFINED,
+			finalLayout = vk.ImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		},
+	}
+
+	color_reference := vk.AttachmentReference{ 0, vk.ImageLayout.COLOR_ATTACHMENT_OPTIMAL }
+	depth_reference := vk.AttachmentReference{ 1, vk.ImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL }
+
+	subpass_description := vk.SubpassDescription{
+		pipelineBindPoint = vk.PipelineBindPoint.GRAPHICS,
+		colorAttachmentCount = 1,
+		pColorAttachments = &color_reference,
+		pDepthStencilAttachment = &depth_reference,
+	}
+
+	// Use subpass dependencies for layout transitions
+	dependencies := []vk.SubpassDependency {
+		{
+			srcSubpass = vk.SUBPASS_EXTERNAL,
+			dstSubpass = 0,
+			srcStageMask = vk.PipelineStageFlags{.FRAGMENT_SHADER},
+			dstStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
+			srcAccessMask = vk.AccessFlags{.SHADER_READ},
+			dstAccessMask = vk.AccessFlags{.COLOR_ATTACHMENT_WRITE},
+			dependencyFlags = vk.DependencyFlags{.BY_REGION},
+		},
+		{
+			srcSubpass = 0,
+			dstSubpass = vk.SUBPASS_EXTERNAL,
+			srcStageMask = vk.PipelineStageFlags{.COLOR_ATTACHMENT_OUTPUT},
+			dstStageMask = vk.PipelineStageFlags{.FRAGMENT_SHADER},
+			srcAccessMask = vk.AccessFlags{.COLOR_ATTACHMENT_WRITE},
+			dstAccessMask = vk.AccessFlags{.SHADER_READ},
+			dependencyFlags = vk.DependencyFlags{.BY_REGION},
+		},
+	}
+
+	// Create the actual renderpass
+	render_pass_info := vk.RenderPassCreateInfo{
+		sType = vk.StructureType.RENDER_PASS_CREATE_INFO,
+		attachmentCount = u32(len(attchment_descriptions)),
+		pAttachments = mem.raw_slice_data(attchment_descriptions),
+		subpassCount = 1,
+		pSubpasses = &subpass_description,
+		dependencyCount = u32(len(dependencies)),
+		pDependencies = mem.raw_slice_data(dependencies),
+	}
+
+	if vk.CreateRenderPass(vkc.device, &render_pass_info, nil, &vkc.offscreen.renderPass) != vk.Result.SUCCESS {
+		log.error("Could not create render pass for offscreen buffers")
+		return false
+	}
+
+	// Create sampler to sample from the color attachments
+	sampler := vk.SamplerCreateInfo {
+		sType = vk.StructureType.SAMPLER_CREATE_INFO,
+		magFilter = vk.Filter.LINEAR,
+		minFilter = vk.Filter.LINEAR,
+		mipmapMode = vk.SamplerMipmapMode.LINEAR,
+		addressModeU = vk.SamplerAddressMode.CLAMP_TO_EDGE,
+		addressModeV = vk.SamplerAddressMode.CLAMP_TO_EDGE,
+		addressModeW = vk.SamplerAddressMode.CLAMP_TO_EDGE,
+		mipLodBias = 0.0,
+		maxAnisotropy = 1.0,
+		minLod = 0.0,
+		maxLod = 1.0,
+		borderColor = vk.BorderColor.FLOAT_OPAQUE_WHITE,
+	}
+	if vk.CreateSampler(vkc.device, &sampler, nil, &vkc.offscreen.sampler) != vk.Result.SUCCESS {
+		log.error("Could not create sampler")
+		return false
+	}
+
+	// Create two frame buffers
+	prepare_offscreen_framebuffer(vkc, &vkc.offscreen.framebuffers[0], vk.Format.R8G8B8A8_UNORM, fb_depth_format)
+	prepare_offscreen_framebuffer(vkc, &vkc.offscreen.framebuffers[1], vk.Format.R8G8B8A8_UNORM, fb_depth_format)
+
+	return true
+}
+
+
+
+
+
 create_instance :: proc(vkc : ^VulkanContext) -> bool {
 	// @todo Enable validation layers?
 	if vkc.enableValidationLayers && !check_validation_layer_support() {
