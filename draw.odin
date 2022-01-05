@@ -48,7 +48,7 @@ FrameBuffer :: struct {
 OffScreen :: struct {
 	renderPass: vk.RenderPass,
 	sampler: vk.Sampler,
-	framebuffers: [2]vk.Framebuffer,
+	framebuffers: [2]FrameBuffer,
 }
 
 VulkanContext :: struct {
@@ -568,7 +568,7 @@ prepare_offscreen_framebuffer :: proc(vkc: ^VulkanContext, frame_buf: ^FrameBuff
 }
 
 
-prepare_offscreen :: proc(vkc: ^VulkanContext) -> bool {
+prepare_offscreen :: proc(vkc: ^VulkanContext, width, height: u32) -> bool {
 	// Find a suitable depth format
 	fb_depth_format := find_depth_format(vkc)
 
@@ -666,8 +666,8 @@ prepare_offscreen :: proc(vkc: ^VulkanContext) -> bool {
 	}
 
 	// Create two frame buffers
-	prepare_offscreen_framebuffer(vkc, &vkc.offscreen.framebuffers[0], vk.Format.R8G8B8A8_UNORM, fb_depth_format)
-	prepare_offscreen_framebuffer(vkc, &vkc.offscreen.framebuffers[1], vk.Format.R8G8B8A8_UNORM, fb_depth_format)
+	prepare_offscreen_framebuffer(vkc, &vkc.offscreen.framebuffers[0], width, height, vk.Format.R8G8B8A8_UNORM, fb_depth_format)
+	prepare_offscreen_framebuffer(vkc, &vkc.offscreen.framebuffers[1], width, height, vk.Format.R8G8B8A8_UNORM, fb_depth_format)
 
 	return true
 }
